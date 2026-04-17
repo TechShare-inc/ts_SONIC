@@ -5,10 +5,10 @@ Starts the full data collection stack in a single tmux session:
 
     Window 0 — data_collection (4 panes):
     ┌───────────────────────┬───────────────────────┐
-    │ Pane 0: C++ Deploy    │ Pane 1: Data Exporter │
+    │ Pane 0: C++ Deploy    │ Pane 2: Data Exporter │
     │ (gear_sonic_deploy)   │ (.venv_data_collection)│
     ├───────────────────────┼───────────────────────┤
-    │ Pane 2: PICO Teleop   │ Pane 3: Camera Viewer │
+    │ Pane 1: Teleop        │ Pane 3: Camera Viewer │
     │ (.venv_teleop)        │ (.venv_data_collection)│
     └───────────────────────┴───────────────────────┘
 
@@ -21,8 +21,9 @@ Starts the full data collection stack in a single tmux session:
 Prerequisites:
     - tmux installed (sudo apt install tmux)
     - Virtual environments set up:
-        bash install_scripts/install_pico.sh          -> .venv_teleop
+        bash install_scripts/install_pico.sh            -> .venv_teleop
         bash install_scripts/install_data_collection.sh -> .venv_data_collection
+        bash install_scripts/install_ros.sh             -> RoboStack env (ros2 teleop only)
     - gear_sonic_deploy built (see docs)
     - For sim: .venv_sim must exist (see install instructions)
 
@@ -30,6 +31,8 @@ Usage (from repo root — no venv activation needed):
     python gear_sonic/scripts/launch_data_collection.py              # real robot (default)
     python gear_sonic/scripts/launch_data_collection.py --sim        # MuJoCo sim
     python gear_sonic/scripts/launch_data_collection.py --no-camera-viewer  # skip viewer
+    python gear_sonic/scripts/launch_data_collection.py --pico-input-source ros2 \
+        --ros-setup-script "$CONDA_PREFIX/setup.bash"
 """
 
 from dataclasses import dataclass
@@ -112,9 +115,12 @@ class DataCollectionLaunchConfig:
     deploy_output_type: str = ""
     """Output type for deploy.sh. Leave empty for default."""
 
-    # PICO teleop options
+    # Teleop streamer options
     pico_manager: bool = True
     """Run pico_manager_thread_server with --manager flag."""
+
+    pico_input_source: str = "xrt"
+    """Teleop input source for pico_manager_thread_server.py (xrt or ros2)."""
 
     pico_vis_vr3pt: bool = False
     """Enable VR 3-point visualization on the teleop streamer."""
@@ -124,6 +130,10 @@ class DataCollectionLaunchConfig:
 
     pico_waist_tracking: bool = False
     """Enable waist tracking on the teleop streamer."""
+
+    ros_setup_script: str = ""
+    """ROS 2 setup.bash to source when pico_input_source=ros2.
+    Leave empty to reuse $CONDA_PREFIX/setup.bash from the shell that launches tmux."""
 
     # Data exporter options
     task_prompt: str = "demo"
@@ -155,7 +165,20 @@ class DataCollectionLaunchConfig:
 SESSION_NAME = "sonic_data_collection"
 
 
-def _check_prerequisites(sim: bool = False):
+def _resolve_ros_setup_script(config: DataCollectionLaunchConfig) -> str:
+    """Pick the ROS 2 setup script used for tmux teleop panes."""
+    if config.ros_setup_script:
+        return config.ros_setup_script
+
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        candidate = Path(conda_prefix) / "setup.bash"
+        if candidate.exists():
+            return str(candidate)
+    return ""
+
+
+def _check_prerequisites(config: DataCollectionLaunchConfig):
     """Verify that required tools and venvs exist."""
     errors = []
 
@@ -182,11 +205,24 @@ def _check_prerequisites(sim: bool = False):
             "Ensure the deploy directory is set up."
         )
 
-    if sim and not (repo_root / ".venv_sim" / "bin" / "activate").exists():
+    if config.sim and not (repo_root / ".venv_sim" / "bin" / "activate").exists():
         errors.append(
             ".venv_sim not found. Set up the simulation venv first "
             "(see install instructions)."
         )
+
+    if config.pico_input_source not in {"xrt", "ros2"}:
+        errors.append("--pico-input-source must be one of: xrt, ros2")
+
+    if config.pico_input_source == "ros2":
+        ros_setup_script = _resolve_ros_setup_script(config)
+        if not ros_setup_script:
+            errors.append(
+                "ROS 2 setup script not found. Activate the RoboStack env before launching, "
+                "or pass --ros-setup-script /path/to/setup.bash"
+            )
+        elif not Path(ros_setup_script).exists():
+            errors.append(f"ROS 2 setup script not found: {ros_setup_script}")
 
     if errors:
         print("ERROR: Prerequisites not met:\n")
@@ -275,7 +311,7 @@ def _check_pane_alive(pane_index: int) -> bool:
 def main(config: DataCollectionLaunchConfig):
     repo_root = Path(__file__).resolve().parent.parent.parent
 
-    _check_prerequisites(sim=config.sim)
+    _check_prerequisites(config)
     _kill_existing_session()
 
     print("=" * 60)
@@ -285,6 +321,7 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Task prompt:     {config.task_prompt}")
     print(f"  Dataset name:    {config.dataset_name or '(auto)'}")
     print(f"  Deploy input:    {config.deploy_input_type}")
+    print(f"  Teleop input:    {config.pico_input_source}")
     if config.deploy_checkpoint:
         print(f"  Checkpoint:      {config.deploy_checkpoint}")
     print(f"  Camera:          {config.camera_host}:{config.camera_port}")
@@ -292,8 +329,11 @@ def main(config: DataCollectionLaunchConfig):
     print(f"  Camera viewer:   {'Yes' if config.camera_viewer else 'No'}")
     print(f"  Wrist cameras:   {'Yes' if config.record_wrist_cameras else 'No'}")
     print(f"  Text-to-speech:  {'Yes' if config.text_to_speech else 'No'}")
-    print(f"  PICO vis:        vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
     print(f"  PC IP (for PICO): {_get_local_ip()}")
+    if config.pico_input_source == "ros2":
+        print(f"  ROS setup:       {_resolve_ros_setup_script(config)}")
+    else:
+        print(f"  Teleop vis:      vr3pt={config.pico_vis_vr3pt} smpl={config.pico_vis_smpl}")
     print("=" * 60)
 
     _create_tmux_session()
@@ -349,11 +389,17 @@ def main(config: DataCollectionLaunchConfig):
     if not _check_pane_alive(0):
         print("WARNING: C++ deploy pane may have failed to start.")
 
-    # --- Pane 2 (bottom-left): PICO Teleop Streamer ---
-    pico_cmd = (
-        f"cd {repo_root} && "
+    # --- Pane 2 (bottom-left): Teleop Streamer ---
+    pico_cmd = f"cd {repo_root} && "
+    if config.pico_input_source == "ros2":
+        pico_cmd += (
+            f"source \"{_resolve_ros_setup_script(config)}\" && "
+            f"export ROS_LOCALHOST_ONLY=${{ROS_LOCALHOST_ONLY:-1}} && "
+        )
+    pico_cmd += (
         f"source .venv_teleop/bin/activate && "
-        f"python gear_sonic/scripts/pico_manager_thread_server.py"
+        f"python gear_sonic/scripts/pico_manager_thread_server.py "
+        f"--input-source {config.pico_input_source}"
     )
     if config.pico_manager:
         pico_cmd += " --manager"
@@ -364,7 +410,7 @@ def main(config: DataCollectionLaunchConfig):
     if config.pico_waist_tracking:
         pico_cmd += " --waist_tracking"
 
-    print("Starting PICO teleop streamer (pane 2)...")
+    print("Starting teleop streamer (pane 2)...")
     _send_to_pane(1, pico_cmd, wait=2.0)
 
     # --- Pane 3 (bottom-right): Camera Viewer ---
@@ -416,7 +462,7 @@ def main(config: DataCollectionLaunchConfig):
         print()
     print("  Window 'data_collection':")
     print("    Pane 0 (top-left):     C++ Deploy")
-    print("    Pane 1 (bottom-left):  PICO Teleop")
+    print("    Pane 1 (bottom-left):  Teleop Streamer")
     print("    Pane 2 (top-right):    Data Exporter  <-- you are here")
     if config.camera_viewer:
         print("    Pane 3 (bottom-right): Camera Viewer")

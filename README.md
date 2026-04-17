@@ -81,6 +81,8 @@ In this repo, we release SONIC's training code, deployment framework, model chec
 
 SONIC supports real-time whole-body teleoperation via PICO VR headset, enabling natural human-to-robot motion transfer for data collection and interactive control.
 
+This repo can also ingest Isaac Teleop / CloudXR data over ROS2 by launching `gear_sonic/scripts/pico_manager_thread_server.py --input-source ros2`. That path is currently documented and supported only for **G1 with a Thor backpack**. The Isaac Teleop bring-up steps are documented in [`docs/source/getting_started/isaac_teleop_publisher_setup.md`](docs/source/getting_started/isaac_teleop_publisher_setup.md).
+
 <div align="center">
 <table>
 <tr>
