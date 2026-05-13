@@ -403,25 +403,6 @@ else
     fi
 fi
 
-# Set up X11/Wayland display forwarding (pattern from isaac-deploy)
-DISPLAY_OPTS=""
-if [ -n "${DISPLAY:-}" ] && command -v xhost &>/dev/null; then
-    XDG_TYPE="${XDG_SESSION_TYPE:-x11}"
-    if [ "$XDG_TYPE" = "x11" ] || [ "$XDG_TYPE" = "tty" ] || [ -z "$XDG_TYPE" ]; then
-        xhost +local:docker 2>/dev/null || true
-    fi
-fi
-DISPLAY_OPTS="-e DISPLAY=${DISPLAY:-:0} -v /tmp/.X11-unix:/tmp/.X11-unix:rw"
-if [ -n "${XDG_SESSION_TYPE:-}" ]; then
-    DISPLAY_OPTS="$DISPLAY_OPTS -e XDG_SESSION_TYPE"
-    if [ "$XDG_SESSION_TYPE" = "wayland" ] && [ -n "${WAYLAND_DISPLAY:-}" ]; then
-        DISPLAY_OPTS="$DISPLAY_OPTS -e WAYLAND_DISPLAY"
-    fi
-fi
-if [ -n "${XDG_RUNTIME_DIR:-}" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
-    DISPLAY_OPTS="$DISPLAY_OPTS -e XDG_RUNTIME_DIR -v $XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR"
-fi
-
 # Run the container with system-specific configuration
 docker run -it --rm \
     --name "$IMAGE_NAME" \
@@ -433,7 +414,6 @@ docker run -it --rm \
     $TENSORRT_MOUNT \
     $ADDITIONAL_MOUNTS \
     $DEVICE_MOUNTS \
-    $DISPLAY_OPTS \
     -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
     -e ROS_DOMAIN_ID=0 \
     -e NVIDIA_VISIBLE_DEVICES=all \

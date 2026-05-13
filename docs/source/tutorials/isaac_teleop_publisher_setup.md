@@ -55,15 +55,6 @@ uv pip install 'isaacteleop[cloudxr]~=1.3.0' --prerelease=allow \
 
 It also seeds `~/cloudxr.env` with `NV_DEVICE_PROFILE=Quest3` (override by editing the file). `CloudXRLauncher` reads this on startup.
 
-(Optional) For the USB / OOB path (`--use-adb` flag on `IsaacTeleopClient`), install the helpers that route signalling and WebRTC over an ADB reverse tunnel:
-
-```bash
-sudo apt install -y xdg-utils android-tools-adb coturn sshpass
-# Disable the auto-started coturn so the launcher's own turnserver on
-# 127.0.0.1:3478 owns the port (see Isaac Teleop OOB docs).
-sudo systemctl disable --now coturn
-```
-
 ## Step 3: Connect the XR Client
 
 The streamer launches the CloudXR runtime as a subprocess of the Python loop the first time you start it (Step 4). Until you connect the headset, `IsaacTeleopClient.start_streaming()` will retry quietly with `"no XR session yet"`.
@@ -97,6 +88,31 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 Watch the streamer logs for `Isaac Teleop session initialized.` — that means CloudXR + DeviceIO are both up. The streamer then prints `Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy` once the headset is connected and body data starts flowing.
 
 For the full sim and real-robot terminal layout (C++ deploy + streamer + optional MuJoCo sim), follow [VR Whole-Body Teleop](vr_wholebody_teleop.md). The Isaac Teleop alternative blocks in that doc use the same `--input-source isaac-teleop` invocation.
+
+## Step 5 (Optional): Start Camera Streaming
+
+Stream cameras to the headset via upstream IsaacTeleop's `camera_streamer.sh`. If you don't have the IsaacTeleop repo yet, clone it first:
+
+```bash
+git clone --recurse-submodules https://github.com/NVIDIA/IsaacTeleop.git
+```
+
+Then build and launch the camera streamer:
+
+```bash
+cd IsaacTeleop
+cd examples/camera_streamer
+
+./camera_streamer.sh build
+./camera_streamer.sh list-cameras
+```
+
+Run with local cameras streaming to the XR headset:
+
+```bash
+source scripts/setup_cloudxr_env.sh
+./camera_streamer.sh run --source local --mode xr
+```
 
 ## Troubleshooting
 
