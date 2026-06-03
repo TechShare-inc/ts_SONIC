@@ -502,9 +502,9 @@ class DefaultEnv:
         self.fall = False
         if self.mj_data.qpos[2] < 0.2:
             self.fall = True
-            print(f"Warning: Robot has fallen, height: {self.mj_data.qpos[2]:.3f} m")
 
-        if self.fall:
+        if not self.config["IGNORE_FALL"] and self.fall:
+            print(f"Warning: Robot has fallen, height: {self.mj_data.qpos[2]:.3f} m")
             self.reset()
 
     def check_self_collision(self):

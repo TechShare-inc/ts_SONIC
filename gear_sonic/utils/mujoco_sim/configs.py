@@ -339,6 +339,9 @@ class SimLoopConfig(BaseConfig):
     enable_image_publish: bool = False
     """Enable image publishing in simulation"""
 
+    ignore_fall: bool = False
+    """If true, do not reset robot when falling"""
+
     camera_port: int = 5555
     """Camera port for image publishing"""
 

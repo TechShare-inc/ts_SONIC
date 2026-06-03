@@ -37,6 +37,7 @@ def main(config: ArgsConfig):
     wbc_config = config.load_wbc_yaml()
     # NOTE: we will override the interface to local if it is not specified
     wbc_config["ENV_NAME"] = config.env_name
+    wbc_config["IGNORE_FALL"] = config.ignore_fall
 
     if config.enable_image_publish:
         assert (
