@@ -7,9 +7,12 @@ This page documents the Isaac Teleop / CloudXR bring-up for **G1 with a Thor bac
 This workflow is currently documented and supported only for **G1 + Thor backpack**.
 ```
 
-After the headset is connected to the in-process CloudXR runtime, continue with the deployment terminals in [VR Whole-Body Teleop](vr_wholebody_teleop.md) (or [Data Collection](data_collection.md)) using `--input-source isaac-teleop`.
+## Prerequisites
 
-This page is a condensed, repo-specific version of the upstream Isaac Teleop docs:
+1. **Completed the [Quick Start](../getting_started/quickstart.md)** — you can run the sim2sim loop (includes [installing the deployment](../getting_started/installation_deploy.md) and [downloading model checkpoints](../getting_started/download_models.md)).
+2. **Completed the [VR Teleop Setup](../getting_started/vr_teleop_setup.md)** — `.venv_teleop` is ready and `install_pico.sh` has been run on Thor.
+
+This page is a condensed, repo-specific version of the upstream [Isaac Teleop](https://nvidia.github.io/IsaacTeleop/) docs:
 
 - [Quick Start](https://nvidia.github.io/IsaacTeleop/main/getting_started/quick_start.html)
 - [`isaacteleop[cloudxr]` Python API](https://nvidia.github.io/IsaacTeleop/main/)
@@ -72,9 +75,23 @@ If you prefer to run the WebXR client from source instead of the hosted client, 
 The streamer will fail to acquire OpenXR until the XR client is connected. Either connect the headset first, or start the streamer and watch for the `Isaac Teleop session initialized.` log line once you do.
 ```
 
-## Step 4: Launch the Teleop Streamer
+## Step 4: Start the C++ Deployment
 
-From the **repo root** on Thor:
+From `gear_sonic_deploy/`:
+
+```bash
+export TensorRT_ROOT=$HOME/TensorRT   # only if not already in ~/.bashrc
+./docker/run-ros2-dev.sh
+
+# inside the container (setup_env.sh is sourced automatically):
+just build                            # first run only
+./deploy.sh --input-type zmq_manager real
+# Wait until you see "Init done"
+```
+
+## Step 5: Launch the Teleop Streamer
+
+From the **repo root**:
 
 ```bash
 source .venv_teleop/bin/activate
@@ -87,9 +104,9 @@ python gear_sonic/scripts/pico_manager_thread_server.py --manager \
 
 Watch the streamer logs for `Isaac Teleop session initialized.` — that means CloudXR + DeviceIO are both up. The streamer then prints `Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy` once the headset is connected and body data starts flowing.
 
-For the full sim and real-robot terminal layout (C++ deploy + streamer + optional MuJoCo sim), follow [VR Whole-Body Teleop](vr_wholebody_teleop.md). The Isaac Teleop alternative blocks in that doc use the same `--input-source isaac-teleop` invocation.
+For controls and calibration, see [VR Whole-Body Teleop](vr_wholebody_teleop.md#pico-controls).
 
-## Step 5: Start Camera Streaming
+## Step 6: Start Camera Streaming
 
 Stream cameras to the headset via upstream IsaacTeleop's `camera_streamer.sh`. If you don't have the IsaacTeleop repo yet, clone it first:
 
@@ -112,7 +129,13 @@ Run with local cameras streaming to the XR headset:
 ```bash
 source scripts/setup_cloudxr_env.sh
 ./camera_streamer.sh run --source local --mode xr
+
+# Optionally specify a camera configuration:
+#   --config config/single_camera.yaml
+#   --config config/multi_camera.yaml
 ```
+
+The `--input-source isaac-teleop` flag also works with [Data Collection](data_collection.md).
 
 ## Troubleshooting
 
@@ -123,6 +146,15 @@ In this setup, that error usually means the XR client is not connected yet. Re-c
 - The headset / web client is fully connected to `https://<thor-ip>:48322`
 - The CloudXR runtime subprocess is still alive (look for the `Isaac Teleop session initialized.` log)
 - `~/cloudxr.env` exists and has the right `NV_DEVICE_PROFILE` for your headset
+
+### `gear_sonic_deploy` build error
+
+If `just build` fails, rebuild from scratch inside the container (Step 4):
+
+```bash
+rm -rf build
+just build
+```
 
 ### `isaacteleop` import error
 
@@ -135,3 +167,4 @@ The streamer logs `[IsaacTeleopReader] No DeviceIO data for 5.0s, flagging disco
 1. The headset is still connected to CloudXR (Step 3).
 2. The Pico body trackers are paired and calibrated (see [VR Teleop Setup → Motion Tracker Setup](../getting_started/vr_teleop_setup.md)).
 3. The first time the schema runs, watch for `[IsaacTeleopReader] Unrecognised body_data schema: type=...` — if you see it, the upstream `FullBodyTrackerPico.get_body_pose().data` shape changed and `_body_data_to_24x7()` in `gear_sonic/utils/teleop/input_readers.py` needs an extra branch for the new layout.
+

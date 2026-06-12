@@ -273,6 +273,22 @@ Or run with `--gpus all -e DISPLAY=$DISPLAY` in your Docker run command. See
 
 ---
 
+## 13. `deploy.sh` fails to bind ZMQ port 5557 on Orin
+
+**Symptom:** `deploy.sh` exits with a ZMQ bind error on port 5557.
+
+**Cause:** A Unitree system service (`iphone_server.service`) is already listening on port 5557.
+
+**Fix:**
+
+```bash
+sudo systemctl stop iphone_server.service
+```
+
+Then re-run the deployment. The service restarts on the next boot; to keep it stopped across reboots use `sudo systemctl disable iphone_server.service`.
+
+---
+
 ## Still stuck?
 
 - Search [existing issues](https://github.com/NVlabs/GR00T-WholeBodyControl/issues)
