@@ -1083,6 +1083,7 @@ class Manager:
         self.facing = np.array([1.0, 0.0])  # Robot's current facing direction (x, y)
         self.custom_modes = [
             LocomotionMode.IDLE,
+            LocomotionMode.SLOW_WALK,
             LocomotionMode.IDLE_SQUAT,
             LocomotionMode.IDLE_KNEEL,
             # LocomotionMode.IDLE_KNEEL_TWO_LEGS,
@@ -1151,17 +1152,17 @@ class Manager:
         elif key == ord("d"):
             self.motion_intention[1] = -self.strafe_speed
 
-        # Handle mode switches
+        # Handle mode switches (no wraparound, only in PLANNER mode)
         elif key == ord("n"):
-            self.current_mode_index = (self.current_mode_index + 1) % len(
-                self.custom_modes
-            )
-            self.locomotion_mode = self.custom_modes[self.current_mode_index]
+            if self.stream_mode == StreamMode.PLANNER:
+                if self.current_mode_index < len(self.custom_modes) - 1:
+                    self.current_mode_index += 1
+                    self.locomotion_mode = self.custom_modes[self.current_mode_index]
         elif key == ord("p"):
-            self.current_mode_index = (
-                self.current_mode_index - 1 + len(self.custom_modes)
-            ) % len(self.custom_modes)
-            self.locomotion_mode = self.custom_modes[self.current_mode_index]
+            if self.stream_mode == StreamMode.PLANNER:
+                if self.current_mode_index > 0:
+                    self.current_mode_index -= 1
+                    self.locomotion_mode = self.custom_modes[self.current_mode_index]
 
         # Handle stream control and exit
         elif key == ord("o"):
@@ -1171,10 +1172,11 @@ class Manager:
             print("Sent STOP command, exiting.")
             self.running = False  # Exit the program
         elif key == ord("]"):
-            self.stream_mode = StreamMode.PLANNER
-            msg = build_command_message(start=True, stop=False, planner=True)
-            self.socket.send(msg)
-            print("Sent START command")
+            if self.locomotion_mode == LocomotionMode.IDLE:
+                self.stream_mode = StreamMode.PLANNER
+                msg = build_command_message(start=True, stop=False, planner=True)
+                self.socket.send(msg)
+                print("Sent START command")
 
     def run(self):
         self.stdscr.nodelay(True)  # Non-blocking getch
@@ -1238,9 +1240,9 @@ def main(stdscr):
     parser = argparse.ArgumentParser(description="Keyboard controller for robot locomotion.")
     parser.add_argument("--port", type=int, default=5556, help="ZMQ server port")
     parser.add_argument("--hz", type=int, default=20, help="Command frequency in Hz")
-    parser.add_argument("--walk_speed", type=float, default=0.5, help="Forward/backward speed")
-    parser.add_argument("--strafe_speed", type=float, default=3.0, help="Strafe speed")
-    parser.add_argument("--turn_speed", type=float, default=0.3, help="Turning speed")
+    parser.add_argument("--walk_speed", type=float, default=0.9, help="Forward/backward speed")
+    parser.add_argument("--strafe_speed", type=float, default=2.0, help="Strafe speed")
+    parser.add_argument("--turn_speed", type=float, default=0.4, help="Turning speed")
 
 
     # Filter out args that are not for this script if running in a complex environment
