@@ -1679,6 +1679,13 @@ class PlannerStreamer:
         self.dt = 1.0 / max(1, poll_hz)
         # Current locomotion mode, default IDLE
         self.mode = LocomotionMode.IDLE
+        self.custom_modes = [
+            LocomotionMode.IDLE,
+            LocomotionMode.SLOW_WALK,
+            LocomotionMode.IDLE_SQUAT,
+        ]
+        self.current_mode_index = 0
+        self.mode = self.custom_modes[self.current_mode_index]
         self.prev_ab = False
         self.prev_xy = False
         # Persistent facing buffer (unit vector on XY plane)
@@ -1719,7 +1726,7 @@ class PlannerStreamer:
             self.three_point.reset_with_measured_q(np.zeros(29, dtype=np.float64))
 
     def send_planner_mode(self, stream_mode: StreamMode):
-        send_robot_mode(mode_value=f"{stream_mode.name}-{self.mode.value}: {self.mode.name}",
+        send_robot_mode(mode_value=f"{stream_mode.name}-{self.current_mode_index}: {self.mode.name}",
                         vr_ip_address=self.vr_ip_address)
 
     def run_once(self, stream_mode: StreamMode):
@@ -1736,13 +1743,17 @@ class PlannerStreamer:
             ab_now = bool(a_pressed) and bool(b_pressed)
             xy_now = bool(x_pressed) and bool(y_pressed)
             if ab_now and not self.prev_ab:
-                self.mode = LocomotionMode(min(LocomotionMode.INJURED_WALK, self.mode + 1))
-                print(f"[PlannerLoop] Mode -> {self.mode.value}: {self.mode.name}")
-                self.send_planner_mode(stream_mode)
+                if self.current_mode_index < len(self.custom_modes) - 1:
+                    self.current_mode_index += 1
+                    self.mode = self.custom_modes[self.current_mode_index]
+                    print(f"[PlannerLoop] Mode -> {self.current_mode_index}: {self.mode.name}")
+                    self.send_planner_mode(stream_mode)
             if xy_now and not self.prev_xy:
-                self.mode = LocomotionMode(max(LocomotionMode.IDLE, self.mode - 1))
-                print(f"[PlannerLoop] Mode -> {self.mode.value}: {self.mode.name}")
-                self.send_planner_mode(stream_mode)
+                if self.current_mode_index > 0:
+                    self.current_mode_index -= 1
+                    self.mode = self.custom_modes[self.current_mode_index]
+                    print(f"[PlannerLoop] Mode -> {self.current_mode_index}: {self.mode.name}")
+                    self.send_planner_mode(stream_mode)
 
             self.prev_ab = ab_now
             self.prev_xy = xy_now
@@ -1880,7 +1891,7 @@ def run_pico_manager(
     subprocess.Popen(["bash", "/opt/apps/roboticsservice/runService.sh"])
     xrt.init()
     print("Waiting for body tracking data...")
-    send_robot_mode(mode_value="Tick [send] box", vr_ip_address=vr_ip_address)
+    send_robot_mode(mode_value="Tick the [send] box", vr_ip_address=vr_ip_address)
 
     while not xrt.is_body_data_available():
         print("waiting for body data...")
@@ -1949,7 +1960,7 @@ def run_pico_manager(
     #   POSE_PAUSE: left_menu_button held --> POSE_PAUSE, released --> POSE
     #
     print("Manager controls: A+X=toggle mode, A+B+X+Y=start/stop policy")
-    send_robot_mode(mode_value="Press ABXY", vr_ip_address=vr_ip_address)
+    send_robot_mode(mode_value="Press A+B+X+Y", vr_ip_address=vr_ip_address)
 
     current_mode = StreamMode.OFF
     # Track which mode VR_3PT was entered from, so left_axis_click returns to it.

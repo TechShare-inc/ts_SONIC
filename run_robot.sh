@@ -1,12 +1,13 @@
 #!/bin/bash
 
 # ==========================================
-# 1. 定义变量
+# 0. 定义变量
 # ==========================================
 PROJECT_ROOT="~/techshare_ws/sonic/GR00T-WholeBodyControl/"
 ROBOT_IP="192.168.0.232"
 ROBOT_USER="unitree"
 ROBOT_PASS="123"
+VR_IP="192.168.0.200"
 
 # 定义用于同步状态的临时文件
 READY_FILE_1="/tmp/robot_t1_ready.tmp"
@@ -18,7 +19,7 @@ rm -f "$READY_FILE_1" "$READY_FILE_2"
 echo "Start deploying robot on $ROBOT_IP..."
 
 # ==========================================
-# 2. 打开 terminal-1 并等待 release mode
+# 1. 打开 terminal-1 并等待 release mode
 # ==========================================
 echo "--> Opening Terminal-1..."
 
@@ -47,11 +48,28 @@ echo "Terminal-1 is ready."
 
 
 # ==========================================
-# 3. 打开 terminal-2 自动处理密码、Y、Init Done
+# 2. 打开 terminal-2 执行视频推流
 # ==========================================
 echo "--> Opening Terminal-2..."
 
-gnome-terminal --title="Terminal-2-Deploy-Real" -- bash -c "expect -c '
+gnome-terminal --title="Terminal-2-Video-Sender" -- bash -c "expect -c '
+    set timeout -1
+    spawn ssh ${ROBOT_USER}@${ROBOT_IP}
+    expect {
+        \"*yes/no*\" { send \"yes\r\"; exp_continue }
+        \"*password:*\" { send \"${ROBOT_PASS}\r\" }
+    }
+    expect \"*@*\"
+    send \"cd ~/techshare_ws/ts-XRoboToolkit-Orin-Video-Sender/ && ./OrinVideoSender --send --server ${VR_IP} --port 12345 --camera stereo\r\"
+    interact
+'" &
+
+# ==========================================
+# 3. 打开 terminal-3 自动处理密码、Y、Init Done
+# ==========================================
+echo "--> Opening Terminal-3..."
+
+gnome-terminal --title="Terminal-3-Deploy-Real" -- bash -c "expect -c '
     set timeout -1
     spawn ssh ${ROBOT_USER}@${ROBOT_IP}
     expect {
@@ -80,11 +98,11 @@ echo "Terminal-2 is ready."
 
 
 # ==========================================
-# 4. 打开 terminal-3 执行 python 脚本
+# 4. 打开 terminal-4 执行 python 脚本
 # ==========================================
-echo "--> Opening Terminal-3..."
+echo "--> Opening Terminal-4..."
 
-gnome-terminal --title="Terminal-3-Pico-Manager" -- bash -c "expect -c '
+gnome-terminal --title="Terminal-4-Pico-Manager" -- bash -c "expect -c '
     set timeout -1
     spawn ssh ${ROBOT_USER}@${ROBOT_IP}
     expect {
@@ -93,7 +111,7 @@ gnome-terminal --title="Terminal-3-Pico-Manager" -- bash -c "expect -c '
     }
     expect \"*@*\"
     send \"cd ${PROJECT_ROOT}\r\"
-    send \"source .venv_teleop/bin/activate && python gear_sonic/scripts/pico_manager_thread_server.py --manager --vr_ip_address 192.168.0.200\r\"
+    send \"source .venv_teleop/bin/activate && python gear_sonic/scripts/pico_manager_thread_server.py --manager --vr_ip_address ${VR_IP}\r\"
     interact
 '" &
 
