@@ -4,7 +4,7 @@
 # 0. 定义变量
 # ==========================================
 PROJECT_ROOT="~/techshare_ws/sonic/GR00T-WholeBodyControl/"
-ROBOT_IP="192.168.0.232"
+ROBOT_IP="192.168.0.239"
 ROBOT_USER="unitree"
 ROBOT_PASS="123"
 VR_IP="192.168.0.200"
@@ -99,6 +99,7 @@ echo "Terminal-2 is ready."
 
 # ==========================================
 # 4. 打开 terminal-4 执行 python 脚本
+#   --waist_tracking
 # ==========================================
 echo "--> Opening Terminal-4..."
 
