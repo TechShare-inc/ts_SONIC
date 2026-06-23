@@ -2,16 +2,80 @@
 
 Get started with SONIC in minutes!
 
- First, ensure you've completed the [installation guide](installation_deploy).
+```{admonition} Prerequisites
+:class: note
+1. **Completed the [Installation Guide](installation_deploy)** — TensorRT is installed, the repo is cloned, and the C++ deployment is built.
+2. **Downloaded the model checkpoints** — run `python download_from_hf.py` from the repo root. See [Downloading Model Checkpoints](download_models) for details.
+```
 
 ```{admonition} Safety Warning
 :class: danger
 Robots can be dangerous. Ensure a clear safety zone, keep a safety operator ready to trigger an emergency stop in front of the keyboard, and use this software at your own risk. The authors and contributors are not responsible for any damage, injury, or loss caused by use or misuse of this project.
 ```
 
-## IsaacLab Eval 
+## Isaac Lab Eval
 
-Coming soon! 
+Use Isaac Lab to sanity-check the released PyTorch checkpoint in simulation. Run these commands from the repo root inside your Isaac Lab Python environment.
+
+If you only downloaded the deployment ONNX files, first fetch the eval checkpoint and the small sample motion set:
+
+```sh
+python download_from_hf.py --training --no-smpl
+python download_from_hf.py --sample
+```
+
+To open the Isaac Sim viewer and watch the policy:
+
+```sh
+python gear_sonic/eval_agent_trl.py \
+    +checkpoint=sonic_release/last.pt \
+    +headless=False \
+    ++num_envs=1 \
+    ++manager_env.observations.policy.enable_corruption=False \
+    ++manager_env.observations.tokenizer.enable_corruption=False \
+    "++manager_env.commands.motion.motion_lib_cfg.motion_file=sample_data/robot_filtered" \
+    "++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=sample_data/smpl_filtered"
+```
+
+Leave this running while you inspect the viewer, then stop it with `Ctrl+C`.
+
+For a quick metrics run:
+
+```sh
+python gear_sonic/eval_agent_trl.py \
+    +checkpoint=sonic_release/last.pt \
+    +headless=True \
+    ++eval_callbacks=im_eval \
+    ++run_eval_loop=False \
+    ++num_envs=128 \
+    ++manager_env.observations.policy.enable_corruption=False \
+    ++manager_env.observations.tokenizer.enable_corruption=False \
+    "+manager_env/terminations=tracking/eval" \
+    "++manager_env.commands.motion.motion_lib_cfg.max_unique_motions=512" \
+    "++manager_env.commands.motion.motion_lib_cfg.motion_file=sample_data/robot_filtered" \
+    "++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=sample_data/smpl_filtered"
+```
+
+To render videos instead:
+
+```sh
+python gear_sonic/eval_agent_trl.py \
+    +checkpoint=sonic_release/last.pt \
+    +headless=True \
+    ++eval_callbacks=im_eval \
+    ++run_eval_loop=False \
+    ++num_envs=8 \
+    ++manager_env.config.render_results=True \
+    "++manager_env.config.save_rendering_dir=/tmp/sonic_renders" \
+    ++manager_env.config.env_spacing=10.0 \
+    "~manager_env/recorders=empty" "+manager_env/recorders=render" \
+    ++manager_env.observations.policy.enable_corruption=False \
+    ++manager_env.observations.tokenizer.enable_corruption=False \
+    "++manager_env.commands.motion.motion_lib_cfg.motion_file=sample_data/robot_filtered" \
+    "++manager_env.commands.motion.motion_lib_cfg.smpl_motion_file=sample_data/smpl_filtered"
+```
+
+Videos are written to `/tmp/sonic_renders`. For full-dataset evaluation and expected metrics, see the [Training Guide](../user_guide/training.md#evaluation).
 
 
 ## Sim2Sim in MuJoCo

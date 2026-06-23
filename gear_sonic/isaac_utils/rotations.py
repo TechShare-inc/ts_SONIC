@@ -779,3 +779,9 @@ def rot6d_to_quat_first_two_cols(rot_6d: torch.Tensor) -> torch.Tensor:
     quat = matrix_to_quaternion(rot_matrix)
 
     return quat
+
+
+def remove_bvh_base_rot(quat, w_last: bool):
+    """Remove BVH base rotation. BVH base = conj(SMPL base), so conj(BVH base) = SMPL base."""
+    base_rot = torch.tensor([[0.5, 0.5, 0.5, 0.5]]).to(quat)
+    return quat_mul(quat, base_rot.repeat(quat.shape[0], 1), w_last=w_last)

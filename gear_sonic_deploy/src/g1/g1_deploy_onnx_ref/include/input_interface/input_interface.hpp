@@ -94,16 +94,17 @@ public:
      * @param movement_state_buffer Thread-safe buffer for locomotion commands.
      * @param current_motion_mutex  Guards concurrent access to current_motion/frame.
      */
-    virtual void handle_input(MotionDataReader& motion_reader, 
-                            std::shared_ptr<const MotionSequence>& current_motion, 
-                            int& current_frame, 
-                            OperatorState& operator_state, 
+    virtual void handle_input(MotionDataReader& motion_reader,
+                            std::shared_ptr<const MotionSequence>& current_motion,
+                            int& current_frame,
+                            OperatorState& operator_state,
                             bool& reinitialize_heading,
-                            DataBuffer<HeadingState>& heading_state_buffer, 
-                            bool has_planner, 
-                            PlannerState& planner_state, 
+                            DataBuffer<HeadingState>& heading_state_buffer,
+                            bool has_planner,
+                            PlannerState& planner_state,
                             DataBuffer<MovementState>& movement_state_buffer,
-                            std::mutex& current_motion_mutex) = 0;
+                            std::mutex& current_motion_mutex,
+                            bool& report_temperature) = 0;
 
     // ------------------------------------------------------------------
     // Capability queries – overridden by sub-classes as needed

@@ -255,11 +255,11 @@ class BaseConfig(ArgsConfigTemplate):
     inference_host: str = "localhost"
     """Inference server host"""
 
-    inference_port: int = 5555
-    """Inference server port"""
+    inference_port: int = 5558
+    """Inference server port (default 5558 to avoid conflict with camera_port 5555)"""
 
-    inference_on_osmo: bool = False
-    """Whether to run inference on osmo."""
+    inference_remote: bool = False
+    """Whether to run inference on a remote server."""
 
     inference_prompt: str = "Pick up apple from table to plate"
     """Inference prompt"""

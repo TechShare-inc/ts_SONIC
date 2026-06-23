@@ -52,6 +52,11 @@ class DefaultEnv:
         self.torque_limit = np.array(self.robot.MOTOR_EFFORT_LIMIT_LIST)
         self.camera_configs = camera_configs
 
+        if not camera_configs and offscreen and enable_image_publish:
+            self.camera_configs = {
+                "ego_view": {"height": 480, "width": 640, "mjcf_name": "head_camera"},
+            }
+
         self.reward_lock = Lock()
         self.unitree_bridge = None
         self.onscreen = onscreen
@@ -478,6 +483,8 @@ class DefaultEnv:
             renderer = self.renderers[camera_name]
             if "params" in camera_config:
                 renderer.update_scene(self.mj_data, camera=camera_config["params"])
+            elif "mjcf_name" in camera_config:
+                renderer.update_scene(self.mj_data, camera=camera_config["mjcf_name"])
             else:
                 renderer.update_scene(self.mj_data, camera=camera_name)
             render_caches[camera_name + "_image"] = renderer.render()

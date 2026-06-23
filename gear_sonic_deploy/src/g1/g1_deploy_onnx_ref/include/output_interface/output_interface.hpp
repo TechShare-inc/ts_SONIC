@@ -13,7 +13,7 @@
  * ## Data Flow
  *
  * The control loop calls `publish()` once per tick on each registered output
- * interface.  The base class provides a shared helper `pack_output_data_map()`
+ * interface.  The base class provides a shared helper `create_output_data_map()`
  * that:
  *  1. Reads the latest entry from the StateLogger.
  *  2. Computes **target** joint positions and body pose (base_trans_target,
@@ -49,7 +49,7 @@
  * @class OutputInterface
  * @brief Abstract base class for publishing robot state / target data.
  *
- * Owns a reference to the StateLogger and provides `pack_output_data_map()`
+ * Owns a reference to the StateLogger and provides `create_output_data_map()`
  * for sub-classes to build the canonical output payload.
  */
 class OutputInterface {
@@ -98,6 +98,15 @@ public:
         return type_;
     }
 
+    /**
+     * @brief Publish (or re-publish) the robot configuration.
+     *
+     * Called during init and periodically so that late-joining subscribers
+     * always receive the config (ZMQ PUB has no persistence; ROS 2 uses
+     * transient_local QoS).  The default implementation is a no-op.
+     */
+    virtual void publish_config() {}
+
 protected:
 
     /**
@@ -123,7 +132,7 @@ protected:
      * Joint ordering uses `isaaclab_to_mujoco` remapping and `default_angles`
      * offsets from policy_parameters.hpp.
      */
-    void pack_output_data_map(
+    void create_output_data_map(
         const std::array<double, 9>& vr_3point_position,
         const std::array<double, 12>& vr_3point_orientation,
         const std::array<double, 3>& vr_3point_compliance,
@@ -260,9 +269,6 @@ protected:
         output_data_map_[kVr3pointPosition].assign(vr_3point_position_sent.begin(), vr_3point_position_sent.end());
         output_data_map_[kVr3pointOrientation].assign(vr_3point_orientation.begin(), vr_3point_orientation.end());
         output_data_map_[kVr3pointCompliance].assign(vr_3point_compliance.begin(), vr_3point_compliance.end());
-
-        output_data_sbuf_.clear();
-        msgpack::pack(output_data_sbuf_, output_data_map_);
     }
 
     /// Protected constructor – sub-classes must provide a StateLogger reference.
@@ -279,7 +285,7 @@ protected:
     /// Reference to the shared StateLogger (provides measured robot state).
     StateLogger& state_logger_;
 
-    /// Reusable map populated by pack_output_data_map() each tick.
+    /// Reusable map populated by create_output_data_map() each tick.
     std::map<std::string, std::vector<double>> output_data_map_;
     /// Reusable msgpack serialisation buffer (cleared and repacked each tick).
     msgpack::sbuffer output_data_sbuf_;

@@ -159,6 +159,7 @@ class ZMQManager : public InputInterface {
     void update() override {
       // Reset per-frame flags
       emergency_stop_ = false;
+      report_temperature_flag_ = false;
       start_control_ = false;
       stop_control_ = false;
       
@@ -172,6 +173,11 @@ class ZMQManager : public InputInterface {
             emergency_stop_ = true;
             is_manager_key = true;
             std::cout << "[ZMQManager] EMERGENCY STOP (O/o)" << std::endl;
+            break;
+          case 'f':
+          case 'F':
+            report_temperature_flag_ = true;
+            is_manager_key = true;
             break;
           // Global compliance controls - work across ALL modes
           case 'g':
@@ -299,13 +305,18 @@ class ZMQManager : public InputInterface {
                       bool has_planner,
                       PlannerState& planner_state,
                       DataBuffer<MovementState>& movement_state_buffer,
-                      std::mutex& current_motion_mutex) override {
+                      std::mutex& current_motion_mutex,
+                      bool& report_temperature) override {
       if (!has_planner) {
         std::cerr << "[ZMQCommandManager ERROR] Planner not available in planner mode" << std::endl;
         operator_state.stop = true;
         return;
       }
       // Emergency stop
+      if (report_temperature_flag_) {
+        report_temperature = true;
+        report_temperature_flag_ = false;
+      }
       if (emergency_stop_) {
         operator_state.stop = true;
         if (planner_state.enabled) {
@@ -364,7 +375,7 @@ class ZMQManager : public InputInterface {
                                        operator_state, reinitialize_heading,
                                        heading_state_buffer,
                                        has_planner, planner_state, movement_state_buffer,
-                                       current_motion_mutex);
+                                       current_motion_mutex, report_temperature);
         }
       }
     }
@@ -1001,12 +1012,8 @@ class ZMQManager : public InputInterface {
       bool has_vr_orientation = (vr_orientation_idx >= 0);
       bool has_vr_compliance = (vr_compliance_idx >= 0);
       // Default values from input_interface.hpp
-      std::array<double, 9> vr_position_values = {0.0903,  0.1615, -0.2411,   // left wrist xyz
-                                                    0.1280, -0.1522, -0.2461,   // right wrist xyz
-                                                    0.0241, -0.0081,  0.4028};  // head xyz
-      std::array<double, 12> vr_orientation_values = {0.7295,  0.3145,  0.5533, -0.2506,   // left quat (w,x,y,z)
-                                                        0.7320, -0.2639,  0.5395,  0.3217,   // right quat (w,x,y,z)
-                                                        0.9991,  0.011,  0.0402, -0.0002};  // head quat (w,x,y,z)
+      std::array<double, 9> vr_position_values = GetVR3PointPosition().second;
+      std::array<double, 12> vr_orientation_values = GetVR3PointOrientation().second;
       std::array<double, 3> vr_compliance_values = GetVR3PointCompliance();
       
       if (has_vr_position) {
@@ -1232,6 +1239,7 @@ class ZMQManager : public InputInterface {
     // Per-frame control flags (reset at start of update())
     // ------------------------------------------------------------------
     bool emergency_stop_ = false;  ///< Set by 'O'/'o' keyboard shortcut.
+    bool report_temperature_flag_ = false;  ///< Set by 'F'/'f' keyboard shortcut.
     bool start_control_ = false;   ///< Start request from command message.
     bool stop_control_ = false;    ///< Stop request from command message.
 

@@ -136,9 +136,10 @@ bool ConvertONNXToTRT(
     trtHash = picosha2::hash256_hex_string(trtHash + GetCudaDeviceName( options.deviceID ));
     trtHash = picosha2::hash256_hex_string(trtHash + std::to_string(int(options.precision)));
 
-    // name of the tensorrt we're going to write to:
+    // name of the tensorrt we're going to write to (same directory as the ONNX model):
     const auto filenamePos = onnxModelPath.find_last_of( '/' ) + 1;
-    trtFile = prefix + onnxModelPath.substr( filenamePos, onnxModelPath.find_last_of( '.' ) - filenamePos );
+    const auto onnxDir = onnxModelPath.substr(0, filenamePos);
+    trtFile = onnxDir + prefix + onnxModelPath.substr( filenamePos, onnxModelPath.find_last_of( '.' ) - filenamePos );
     trtFile += ".trt";
 
     if (!forceConvert && FileExists( trtFile ) )

@@ -78,6 +78,12 @@
  *
  * Can operate standalone (keyboard + network) or as a delegate inside
  * InterfaceManager / GamepadManager / ZMQManager.
+ *
+ * Protocol Version 4 additionally supports token-only streaming:
+ *   REQUIRED: token_state (motion token array)
+ *   OPTIONAL: frame_index, left_hand_joints, right_hand_joints, body_quat_w
+ *   STORES:   token_state → external_token_state_ (for policy input)
+ *             hand joints → left_hand_joint_/right_hand_joint_ (for robot control)
  */
 class ZMQEndpointInterface : public InputInterface {
 public:
@@ -97,6 +103,7 @@ public:
     bool delta_right = false;      ///< Heading nudge right.
     bool reinitialize = false;     ///< Recapture IMU heading.
     bool toggle_zmq_mode = false;  ///< Toggle ZMQ streaming on/off (Enter key).
+    bool report_temperature = false; ///< Report motor temperatures (F key).
 
     /// When true, handle_input() reads from the ZMQ stream instead of
     /// pre-loaded reference motions.
@@ -193,6 +200,7 @@ public:
         delta_right = false;
         reinitialize = false;
         toggle_zmq_mode = false;
+        report_temperature = false;
 
         // Read keyboard input (same as SimpleKeyboard, but without planner keys)
         // Using shared buffered reading
@@ -210,6 +218,8 @@ public:
                 case ']': start_control = true; break;
                 case 'o':
                 case 'O': stop_control = true; break;
+                case 'f':
+                case 'F': report_temperature = true; break;
                 case 'q':
                 case 'Q': delta_left = true; break;
                 case 'e':
@@ -222,6 +232,41 @@ public:
 
     }
     
+    /// Disable ZMQ streaming, reset to reference motion, and clear external token state.
+    /// Called when an unrecoverable protocol error is detected during ZMQ processing.
+    void DisableZmqAndReset(
+        MotionDataReader& motion_reader,
+        std::shared_ptr<const MotionSequence>& current_motion,
+        int& current_frame,
+        OperatorState& operator_state,
+        bool& reinitialize_heading,
+        std::mutex& current_motion_mutex,
+        const std::string& reason)
+    {
+        std::cerr << "✗✗✗ ERROR: " << reason << std::endl;
+        std::cerr << "✗✗✗ This is not allowed. Exiting ZMQ streaming mode for safety." << std::endl;
+
+        use_zmq_stream = false;
+
+        {
+            std::lock_guard<std::mutex> lock(current_motion_mutex);
+            has_external_token_state_ = false;
+            external_token_state_.SetData({});
+            operator_state.play = false;
+            reinitialize_heading = true;
+            current_motion = motion_reader.GetMotionShared(motion_reader.current_motion_index_);
+            current_frame = 0;
+            if (current_motion->GetEncodeMode() >= 0) {
+                current_motion->SetEncodeMode(0);
+            }
+        }
+
+        std::cout << "=====================================" << std::endl;
+        std::cout << "ZMQ STREAMING MODE: FORCE DISABLED" << std::endl;
+        std::cout << "=====================================" << std::endl;
+        std::cout << "Returned to reference motion. Re-enable ZMQ mode to continue." << std::endl;
+    }
+
     // Handle input and update motion data
     void handle_input(MotionDataReader& motion_reader,
                      std::shared_ptr<const MotionSequence>& current_motion,
@@ -232,7 +277,8 @@ public:
                      bool has_planner,
                      PlannerState& planner_state,
                      DataBuffer<MovementState>& movement_state_buffer,
-                     std::mutex& current_motion_mutex) override {
+                     std::mutex& current_motion_mutex,
+                     bool& report_temperature) override {
         
         // Handle safety reset from interface manager
         if (trigger_safety_reset) {
@@ -242,6 +288,8 @@ public:
             {
                 std::lock_guard<std::mutex> lock(current_motion_mutex);
                 // Encoder mode will be read from the motion's encode_mode
+                has_external_token_state_ = false;
+                external_token_state_.SetData({});
                 operator_state.play = false;
                 reinitialize_heading = true;
                 auto temp_motion = std::make_shared<MotionSequence>(*current_motion);
@@ -290,6 +338,8 @@ public:
                 // reset the current motion and frame
                 {
                     std::lock_guard<std::mutex> lock(current_motion_mutex);
+                    has_external_token_state_ = false;
+                    external_token_state_.SetData({});
                     operator_state.play = false;
                     reinitialize_heading = true;
                     current_motion = motion_reader.GetMotionShared(motion_reader.current_motion_index_); // current motion is the pre-loaded motion
@@ -304,6 +354,7 @@ public:
             }
         }
         if (stop_control) { operator_state.stop = true; }
+        if (this->report_temperature) { report_temperature = true; }
         if (start_control) { operator_state.start = true; }
 
         // Handle delta heading controls
@@ -340,36 +391,41 @@ public:
                     // Decode into a new MotionSequence with current playback position
                     auto result = DecodeIntoMotionSequence(current_frame, streamed_motion_, stream_window_start_, heading_state_buffer);
                     
-                    // Check if protocol version change was detected
-                    if (!result.motion && result.protocol_version != 0) {
-                        // Protocol version changed - decoder rejected it
-                        std::cerr << "✗✗✗ ERROR: Protocol version changed from " << active_protocol_version_
-                                  << " to " << result.protocol_version << " during active ZMQ session!" << std::endl;
-                        std::cerr << "✗✗✗ This is not allowed. Exiting ZMQ streaming mode for safety." << std::endl;
-                        
-                        // Disable ZMQ streaming and reset
-                        use_zmq_stream = false;
-                        
-                        // Encoder mode will be read from the reference motion's encode_mode
-                        
-                        // Reset to reference motion
-                        {
-                            std::lock_guard<std::mutex> lock(current_motion_mutex);
-                            operator_state.play = false;
-                            reinitialize_heading = true;
-                            current_motion = motion_reader.GetMotionShared(motion_reader.current_motion_index_);
-                            current_frame = 0;
-                            if (current_motion->GetEncodeMode() >= 0) {
-                                current_motion->SetEncodeMode(0);
-                            }
+                    // Handle Protocol v4 (token-only) - no motion, just tokens
+                    if (result.protocol_version == 4) {
+                        if (result.motion) {
+                            DisableZmqAndReset(motion_reader, current_motion, current_frame,
+                                               operator_state, reinitialize_heading, current_motion_mutex,
+                                               "Protocol version 4 with motion data is impossible!");
+                            return;
+                        }
+
+                        if (result.token_data.empty()) {
+                            DisableZmqAndReset(motion_reader, current_motion, current_frame,
+                                               operator_state, reinitialize_heading, current_motion_mutex,
+                                               "Protocol version 4 with empty token data!");
+                            return;
                         }
                         
-                        std::cout << "=====================================" << std::endl;
-                        std::cout << "ZMQ STREAMING MODE: FORCE DISABLED" << std::endl;
-                        std::cout << "=====================================" << std::endl;
-                        std::cout << "Returned to reference motion. Re-enable ZMQ mode to continue." << std::endl;
+                        // Keep robot active
+                        {
+                            std::lock_guard<std::mutex> lock(current_motion_mutex);
+                            external_token_state_.SetData(result.token_data);
+                            has_external_token_state_ = true;
+                            operator_state.play = true; // this should be redundant because the robot never read reference motion
+                        }
                         
-                        // Skip processing this frame
+                        // Skip motion handling and keyboard controls
+                        return;
+                    }
+                    
+                    // Check if protocol version change was detected (error case)
+                    if (!result.motion && result.protocol_version != 0) {
+                        DisableZmqAndReset(motion_reader, current_motion, current_frame,
+                                           operator_state, reinitialize_heading, current_motion_mutex,
+                                           "Protocol version changed from " + std::to_string(active_protocol_version_)
+                                           + " to " + std::to_string(result.protocol_version)
+                                           + " during active ZMQ session!");
                         return;
                     }
                     
@@ -549,6 +605,7 @@ private:
         bool did_catchup_reset = false;            ///< True → caller should reset playback to frame 0.
         int frame_step = 1;                        ///< Detected stride between frame indices.
         int protocol_version = 0;                  ///< Protocol version from the message (1, 2, or 3).
+        std::vector<double> token_data;            ///< Token data from the message.
     };
     
     /**
@@ -591,6 +648,7 @@ private:
         // Find expected fields by name (including frame_index for alignment)
         int joint_pos_idx = -1, joint_vel_idx = -1, body_quat_idx = -1, frame_index_idx = -1, smpl_joints_idx = -1, smpl_pose_idx = -1;
         int left_hand_joints_idx = -1, right_hand_joints_idx = -1, catch_up_idx = -1;
+        int token_state_idx = -1;  // Protocol v4: token-only streaming
         int heading_increment_idx = -1;
         int timestamp_monotonic_idx = -1;
         // VR 3-point tracking fields (optional)
@@ -607,6 +665,7 @@ private:
             else if (f.name == "left_hand_joints") left_hand_joints_idx = static_cast<int>(i);
             else if (f.name == "right_hand_joints") right_hand_joints_idx = static_cast<int>(i);
             else if (f.name == "catch_up") catch_up_idx = static_cast<int>(i);
+            else if (f.name == "token_state") token_state_idx = static_cast<int>(i);
             else if (f.name == "heading_increment") heading_increment_idx = static_cast<int>(i);
             else if (f.name == "timestamp_monotonic") timestamp_monotonic_idx = static_cast<int>(i);
             // VR 3-point tracking fields
@@ -615,8 +674,203 @@ private:
             else if (f.name == "vr_compliance") vr_compliance_idx = static_cast<int>(i);
         }
         
-        // Validate required fields based on protocol version
-        // body_quat and frame_index are required for both versions
+        // ===== PROTOCOL VERSION 4: Token-Only Streaming (check first, has different requirements) =====
+        if (protocol_version == 4) {
+            // Token-only mode - no motion data, just tokens for the policy
+            if (token_state_idx < 0) {
+                std::cerr << "[ZMQEndpointInterface] Version 4 missing required field 'token_state'" << std::endl;
+                return result;
+            }
+
+            // Check protocol version before decoding token_state
+            if (active_protocol_version_ == -1) {
+                // First message - establish protocol version
+                active_protocol_version_ = protocol_version;
+                if constexpr (DEBUG_LOGGING) {
+                    std::cout << "[ZMQEndpointInterface] Protocol version " << active_protocol_version_ << " established" << std::endl;
+                }
+            } else if (active_protocol_version_ != protocol_version) {
+                // Protocol version changed - this is an error
+                std::cerr << "[ZMQEndpointInterface] ERROR: Protocol version changed from " 
+                        << active_protocol_version_ << " to " << protocol_version << std::endl;
+                result.protocol_version = protocol_version;  // Signal the change to caller
+                return result;
+            }
+
+            // Decode token_state field
+            const auto& token_field = buffered_header_.fields[static_cast<size_t>(token_state_idx)];
+            const auto& token_buf = buffered_buffers_[static_cast<size_t>(token_state_idx)];
+            
+            // Calculate token dimension from shape
+            size_t token_dim = 1;
+            for (size_t d : token_field.shape) {
+                token_dim *= d;
+            }
+            
+            std::vector<double> token_data(token_dim);
+            bool needs_swap = buffered_header_.NeedsByteSwap();
+            
+            if (token_field.dtype == "f32") {
+                for (size_t i = 0; i < token_dim; ++i) {
+                    float val;
+                    std::memcpy(&val, token_buf.data() + i * sizeof(float), sizeof(float));
+                    if (needs_swap) val = byte_swap(val);
+                    token_data[i] = static_cast<double>(val);
+                }
+            } else if (token_field.dtype == "f64") {
+                for (size_t i = 0; i < token_dim; ++i) {
+                    double val;
+                    std::memcpy(&val, token_buf.data() + i * sizeof(double), sizeof(double));
+                    if (needs_swap) val = byte_swap(val);
+                    token_data[i] = val;
+                }
+            } else {
+                std::cerr << "[ZMQEndpointInterface] Version 4: unsupported dtype '" << token_field.dtype << "' for token_state" << std::endl;
+                return result;
+            }
+            
+            // Log for debugging (show first token value and frame info if available)
+            std::string frame_info = "";
+            if (frame_index_idx >= 0) {
+                const auto& frame_idx_field = buffered_header_.fields[static_cast<size_t>(frame_index_idx)];
+                const auto& frame_idx_buf = buffered_buffers_[static_cast<size_t>(frame_index_idx)];
+                if (frame_idx_field.dtype == "i64" && frame_idx_buf.size() >= sizeof(int64_t)) {
+                    int64_t frame_val;
+                    std::memcpy(&frame_val, frame_idx_buf.data(), sizeof(int64_t));
+                    if (needs_swap) frame_val = byte_swap(frame_val);
+                    frame_info = ", frame_index: " + std::to_string(frame_val);
+                } else if (frame_idx_field.dtype == "i64" && frame_idx_buf.size() > sizeof(int64_t)) {
+                    // Chunk mode: show range
+                    int num_frames = frame_idx_buf.size() / sizeof(int64_t);
+                    int64_t first_frame, last_frame;
+                    std::memcpy(&first_frame, frame_idx_buf.data(), sizeof(int64_t));
+                    std::memcpy(&last_frame, frame_idx_buf.data() + (num_frames - 1) * sizeof(int64_t), sizeof(int64_t));
+                    if (needs_swap) {
+                        first_frame = byte_swap(first_frame);
+                        last_frame = byte_swap(last_frame);
+                    }
+                    frame_info = ", frames: " + std::to_string(first_frame) + " to " + std::to_string(last_frame) 
+                               + " (chunk_size: " + std::to_string(num_frames) + ")";
+                }
+            }
+            std::cout << "[ZMQEndpointInterface] Protocol v4: Received " << token_dim 
+                      << "D token (latent action), tokens[0]=" << token_data[0] << frame_info << std::endl;
+            
+            // Store tokens in the external token state buffer (inherited from InputInterface)
+            result.token_data = std::move(token_data);
+            
+            // Decode hand joint positions if present (7 DOF joint values) - same as protocol v2/v3
+            bool has_left_hand_joints = (left_hand_joints_idx >= 0);
+            bool has_right_hand_joints = (right_hand_joints_idx >= 0);
+            auto [has_left_hand_v4, left_hand_joint_values] = GetHandPose(true);
+            auto [has_right_hand_v4, right_hand_joint_values] = GetHandPose(false);
+            
+            if (has_left_hand_joints) {
+                const auto& left_hand_field = buffered_header_.fields[left_hand_joints_idx];
+                const auto& left_hand_buf = buffered_buffers_[left_hand_joints_idx];
+                
+                // Validate shape: expect [7] or [N, 7] (for chunks, use first frame)
+                int num_hand_joints = 0;
+                if (left_hand_field.shape.size() == 1 && left_hand_field.shape[0] == 7) {
+                    num_hand_joints = 7;
+                } else if (left_hand_field.shape.size() == 2 && left_hand_field.shape[1] == 7) {
+                    num_hand_joints = 7;
+                }
+                
+                if (num_hand_joints == 7) {
+                    // Decode 7 joint values (from first frame if chunked [N, 7])
+                    if (left_hand_field.dtype == "f32") {
+                        for (int j = 0; j < 7; ++j) {
+                            float val;
+                            std::memcpy(&val, left_hand_buf.data() + j * sizeof(float), sizeof(float));
+                            if (needs_swap) val = byte_swap(val);
+                            left_hand_joint_values[j] = static_cast<double>(val);
+                        }
+                    } else if (left_hand_field.dtype == "f64") {
+                        for (int j = 0; j < 7; ++j) {
+                            double val;
+                            std::memcpy(&val, left_hand_buf.data() + j * sizeof(double), sizeof(double));
+                            if (needs_swap) val = byte_swap(val);
+                            left_hand_joint_values[j] = val;
+                        }
+                    }
+                } else {
+                    std::cerr << "[ZMQEndpointInterface] Protocol v4: Invalid left_hand_joints shape" << std::endl;
+                    has_left_hand_joints = false;
+                }
+            }
+            
+            if (has_right_hand_joints) {
+                const auto& right_hand_field = buffered_header_.fields[right_hand_joints_idx];
+                const auto& right_hand_buf = buffered_buffers_[right_hand_joints_idx];
+                
+                // Validate shape: expect [7] or [N, 7] (for chunks, use first frame)
+                int num_hand_joints = 0;
+                if (right_hand_field.shape.size() == 1 && right_hand_field.shape[0] == 7) {
+                    num_hand_joints = 7;
+                } else if (right_hand_field.shape.size() == 2 && right_hand_field.shape[1] == 7) {
+                    num_hand_joints = 7;
+                }
+                
+                if (num_hand_joints == 7) {
+                    // Decode 7 joint values (from first frame if chunked [N, 7])
+                    if (right_hand_field.dtype == "f32") {
+                        for (int j = 0; j < 7; ++j) {
+                            float val;
+                            std::memcpy(&val, right_hand_buf.data() + j * sizeof(float), sizeof(float));
+                            if (needs_swap) val = byte_swap(val);
+                            right_hand_joint_values[j] = static_cast<double>(val);
+                        }
+                    } else if (right_hand_field.dtype == "f64") {
+                        for (int j = 0; j < 7; ++j) {
+                            double val;
+                            std::memcpy(&val, right_hand_buf.data() + j * sizeof(double), sizeof(double));
+                            if (needs_swap) val = byte_swap(val);
+                            right_hand_joint_values[j] = val;
+                        }
+                    }
+                } else {
+                    std::cerr << "[ZMQEndpointInterface] Protocol v4: Invalid right_hand_joints shape" << std::endl;
+                    has_right_hand_joints = false;
+                }
+            }
+            
+            // Set hand joints if present
+            if (has_left_hand_joints || has_right_hand_joints) {
+                has_hand_joints_ = true;
+                
+                if (has_left_hand_joints) {
+                    left_hand_joint_.SetData(left_hand_joint_values);
+                    if constexpr (DEBUG_LOGGING) {
+                        std::cout << "[ZMQEndpointInterface] Protocol v4: Left hand joints set: [";
+                        for (int j = 0; j < 7; ++j) {
+                            if (j > 0) std::cout << ", ";
+                            std::cout << std::fixed << std::setprecision(4) << left_hand_joint_values[j];
+                        }
+                        std::cout << "]" << std::endl;
+                    }
+                }
+                
+                if (has_right_hand_joints) {
+                    right_hand_joint_.SetData(right_hand_joint_values);
+                    if constexpr (DEBUG_LOGGING) {
+                        std::cout << "[ZMQEndpointInterface] Protocol v4: Right hand joints set: [";
+                        for (int j = 0; j < 7; ++j) {
+                            if (j > 0) std::cout << ", ";
+                            std::cout << std::fixed << std::setprecision(4) << right_hand_joint_values[j];
+                        }
+                        std::cout << "]" << std::endl;
+                    }
+                }
+            }
+            
+            // Return success with protocol version but no motion (token-only)
+            result.protocol_version = 4;
+            return result;
+        }
+        
+        // Validate required fields based on protocol version (for motion protocols v1/v2/v3)
+        // body_quat and frame_index are required for motion protocols
         if (body_quat_idx < 0) {
             std::cerr << "[ZMQEndpointInterface] Missing required field 'body_quat' (or 'body_quat_w')" << std::endl;
             return result;
@@ -657,6 +911,7 @@ private:
                 return result;
             }
         } else {
+            // Protocol v4 is handled above, before body_quat/frame_index validation
             std::cerr << "[ZMQEndpointInterface] Unsupported protocol version: " << protocol_version << std::endl;
             return result;
         }
@@ -1211,6 +1466,18 @@ private:
                     frame_indices[i] = val;
                 }
             }
+            
+            // Print frame indices for protocol v3 (SMPL actions)
+            if (protocol_version == 3 && !frame_indices.empty()) {
+                if (frame_indices.size() == 1) {
+                    std::cout << "[ZMQEndpointInterface] Protocol v3: Received SMPL action (single) - frame_index: " 
+                              << frame_indices[0] << std::endl;
+                } else {
+                    std::cout << "[ZMQEndpointInterface] Protocol v3: Received SMPL action (chunk) - frames: " 
+                              << frame_indices[0] << " to " << frame_indices.back() 
+                              << ", chunk_size: " << frame_indices.size() << std::endl;
+                }
+            }
         }
 
         // Optional: decode heading_increment (single scalar, f32 or f64)
@@ -1541,6 +1808,12 @@ private:
         const std::vector<ZMQPackedMessageSubscriber::BufferView>& bufs) {
         
         std::lock_guard<std::mutex> lock(data_mutex_);
+        
+        // Print message received info
+        std::cout << "[ZMQEndpointInterface] Received ZMQ message - topic: '" << topic 
+                  << "', protocol_version: " << hdr.version 
+                  << ", num_fields: " << hdr.fields.size() 
+                  << ", total_size: " << bufs.size() << " buffers" << std::endl;
         
         // Buffer the received data for processing in handle_input (main thread)
         buffered_header_ = hdr;

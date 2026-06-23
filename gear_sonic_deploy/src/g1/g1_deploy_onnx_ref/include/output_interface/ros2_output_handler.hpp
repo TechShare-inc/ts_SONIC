@@ -220,7 +220,7 @@ public:
      * @note All config fields are set before StateLogger construction and are
      *       immutable, so they're guaranteed to be available when this is called.
      */
-    void publish_config() {
+    void publish_config() override {
         if (!node_ || !rclcpp::ok()) {
             throw std::runtime_error("[ROS2 Output ERROR] Cannot publish config: ROS2 node not ready");
         }

@@ -82,8 +82,9 @@ class InterfaceManager : public InputInterface {
     }
 
     void update() override {
-      // Reset emergency stop flag each frame
+      // Reset per-frame flags
       emergency_stop_ = false;
+      report_temperature_flag_ = false;
       
       // Read stdin using shared buffering mechanism, check for manager keys
       char ch;
@@ -151,6 +152,12 @@ class InterfaceManager : public InputInterface {
             AdjustMaxCloseRatio(-0.1);
             is_manager_key = true;
             break;
+          case 'f':
+          case 'F':
+            // Global temperature report
+            report_temperature_flag_ = true;
+            is_manager_key = true;
+            break;
         }
         
         // Buffer non-manager keys for the active interface to read
@@ -176,13 +183,20 @@ class InterfaceManager : public InputInterface {
                       bool has_planner,
                       PlannerState& planner_state,
                       DataBuffer<MovementState>& movement_state_buffer,
-                      std::mutex& current_motion_mutex) override {
+                      std::mutex& current_motion_mutex,
+                      bool& report_temperature) override {
       
       // Handle global emergency stop (works for all interfaces, especially gamepad)
       if (emergency_stop_) {
         operator_state.stop = true;
       }
-      
+
+      // Handle global temperature report (F key)
+      if (report_temperature_flag_) {
+        report_temperature = true;
+        report_temperature_flag_ = false;
+      }
+
       // Check if ROS2 is active but planner is not available - switch to keyboard
       if (active_ == ManagedType::ROS2 && !has_planner) {
         std::cout << "[InterfaceManager] ROS2 requires planner but planner not loaded. Switching to KEYBOARD" << std::endl;
@@ -192,7 +206,7 @@ class InterfaceManager : public InputInterface {
       // Delegate to the active interface
       current_->handle_input(motion_reader, current_motion, current_frame, operator_state,
                              reinitialize_heading, heading_state_buffer, has_planner, planner_state,
-                             movement_state_buffer, current_motion_mutex);
+                             movement_state_buffer, current_motion_mutex, report_temperature);
     }
     
     // Override all getters to forward directly to the active interface
@@ -374,6 +388,7 @@ class InterfaceManager : public InputInterface {
     /// Applies to ALL interfaces (especially useful when gamepad is active
     /// and has no physical stop button readily accessible).
     bool emergency_stop_ = false;
+    bool report_temperature_flag_ = false;
 };
 
 #endif // INTERFACE_MANAGER_HPP

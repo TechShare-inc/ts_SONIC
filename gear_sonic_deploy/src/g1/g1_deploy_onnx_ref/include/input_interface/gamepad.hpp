@@ -486,16 +486,17 @@ class Gamepad : public InputInterface {
 
     // Override the handle_input function from InputInterface
     // This processes the gamepad input flags and performs actions using the provided parameters
-    void handle_input(MotionDataReader& motion_reader, 
-                     std::shared_ptr<const MotionSequence>& current_motion, 
-                     int& current_frame, 
-                     OperatorState& operator_state, 
-                     bool& reinitialize_heading, 
-                     DataBuffer<HeadingState>& heading_state_buffer, 
-                     bool has_planner, 
-                     PlannerState& planner_state, 
+    void handle_input(MotionDataReader& motion_reader,
+                     std::shared_ptr<const MotionSequence>& current_motion,
+                     int& current_frame,
+                     OperatorState& operator_state,
+                     bool& reinitialize_heading,
+                     DataBuffer<HeadingState>& heading_state_buffer,
+                     bool has_planner,
+                     PlannerState& planner_state,
                      DataBuffer<MovementState>& movement_state_buffer,
-                     std::mutex& current_motion_mutex) override {
+                     std::mutex& current_motion_mutex,
+                     bool& report_temperature) override {
       
 
       // Handle safety reset from interface manager

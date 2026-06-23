@@ -52,7 +52,19 @@ endif()
 
 # Detect architecture and conditionally set CUDA library paths
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-  # ARM/Jetson platform - add DLA support
+  # Check for Thor (no DLA support)
+  set(IS_THOR FALSE)
+  if(DEFINED ENV{IS_THOR} AND "$ENV{IS_THOR}" STREQUAL "true")
+    set(IS_THOR TRUE)
+  elseif(EXISTS "/proc/device-tree/model")
+    file(READ "/proc/device-tree/model" DEVICE_MODEL)
+    string(FIND "${DEVICE_MODEL}" "Thor" THOR_POS)
+    if(NOT THOR_POS EQUAL -1)
+      set(IS_THOR TRUE)
+    endif()
+  endif()
+
+  # ARM/Jetson platform - conditionally add DLA support
   # Dynamically find CUDA installation for ARM
   if(DEFINED ENV{CUDAToolkit_ROOT})
     set(CUDA_ARM_LIB_PATH "$ENV{CUDAToolkit_ROOT}/targets/aarch64-linux/lib")
@@ -68,13 +80,22 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
       set(CUDA_ARM_LIB_PATH "/usr/local/cuda/lib64")
     endif()
   endif()
-  
+
   set(CUDA_LINK_DIRS ${CUDA_ARM_LIB_PATH})
-  # Match bare-metal Jetson builds: link cudla from the CUDA toolkit (targets/aarch64-linux/lib)
-  set(CUDLA_LIBRARY "cudla")
-  message(STATUS "✅ ARM64 detected - enabling DLA (cudla) support")
-  message(STATUS "   Using CUDA library path: ${CUDA_ARM_LIB_PATH}")
-  message(STATUS "   Using CUDLA library: -l${CUDLA_LIBRARY}")
+
+  # DLA support: only for non-Thor Jetson devices
+  if(IS_THOR)
+    set(CUDLA_LIBRARY "")
+    message(STATUS "🚀 ARM64 (Thor) detected - building without DLA support")
+    message(STATUS "   Using CUDA library path: ${CUDA_ARM_LIB_PATH}")
+    message(STATUS "   Thor doesn't have DLA engines")
+  else()
+    # Match bare-metal Jetson builds: link cudla from the CUDA toolkit (targets/aarch64-linux/lib)
+    set(CUDLA_LIBRARY "cudla")
+    message(STATUS "✅ ARM64 detected - enabling DLA (cudla) support")
+    message(STATUS "   Using CUDA library path: ${CUDA_ARM_LIB_PATH}")
+    message(STATUS "   Using CUDLA library: -l${CUDLA_LIBRARY}")
+  endif()
   
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
   # x86_64 platform - no DLA support needed

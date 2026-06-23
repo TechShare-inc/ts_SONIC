@@ -67,7 +67,7 @@ instance/
 .scrapy
 
 # Sphinx documentation
-
+data/
 
 # PyBuilder
 .pybuilder/
@@ -171,8 +171,14 @@ huggingface/
 
 # Model checkpoints (download via download_from_hf.py)
 *.onnx
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.engine
 !decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-Balance.onnx
 !decoupled_wbc/sim2mujoco/resources/robots/g1/policy/GR00T-WholeBodyControl-Walk.onnx
+!motionbricks/out/**/*.ckpt
 
 
 # Mujoco
@@ -188,7 +194,28 @@ external_dependencies/XRoboToolkit-PC-Service-Pybind/
 # UV
 uv.lock
 
+# Virtual environments (created by install_scripts/)
+.venv_sim/
+.venv_teleop/
+.venv_data_collection/
+.venv_camera/
+.venv_inference/
+
 # XRoboToolkit-PC-Service-Pybind
 xrobotoolkit_sdk.cpython-*-*-*.so
 teleop_vids/
 *.code-workspace
+# Motion/training data (large local datasets, not tracked in git)
+data/
+bones_seed_smpl/
+sonic_release/
+# Training output logs
+logs_rl/
+logs_eval/
+
+# Model checkpoints directory
+models/
+
+# Downloaded from HuggingFace (hf download)
+sample_data/
+sonic_release/

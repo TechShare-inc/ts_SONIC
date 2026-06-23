@@ -49,6 +49,9 @@ StateLogger::StateLogger(std::string csv_dir, size_t ring_capacity, int num_join
   sink_q_(enable_csv, csv_path_, "q", "q", FileSink::HeaderType::VECTOR),
   sink_dq_(enable_csv, csv_path_, "dq", "dq", FileSink::HeaderType::VECTOR),
   sink_action_(enable_csv, csv_path_, "action", "act", FileSink::HeaderType::VECTOR),
+  sink_motor_temperature_(enable_csv, csv_path_, "motor_temperature", "temp", FileSink::HeaderType::VECTOR),
+  sink_motor_error_(enable_csv, csv_path_, "motor_error", "err", FileSink::HeaderType::VECTOR),
+  sink_motor_torque_(enable_csv, csv_path_, "motor_torque", "tau", FileSink::HeaderType::VECTOR),
   sink_left_hand_q_(enable_csv, csv_path_, "left_hand_q", "left_hand_q", FileSink::HeaderType::VECTOR),
   sink_left_hand_dq_(enable_csv, csv_path_, "left_hand_dq", "left_hand_dq", FileSink::HeaderType::VECTOR),
   sink_right_hand_q_(enable_csv, csv_path_, "right_hand_q", "right_hand_q", FileSink::HeaderType::VECTOR),
@@ -88,6 +91,9 @@ uint64_t StateLogger::LogFullState(const std::array<double, 4>& base_quat,
                                    const std::span<double>& body_q,
                                    const std::span<double>& body_dq,
                                    const std::span<double>& last_action,
+                                   const std::span<double>& motor_temperature,
+                                   const std::span<double>& motor_error,
+                                   const std::span<double>& motor_torque,
                                    const std::span<double>& left_hand_q,
                                    const std::span<double>& left_hand_dq,
                                    const std::span<double>& right_hand_q,
@@ -111,6 +117,9 @@ uint64_t StateLogger::LogFullState(const std::array<double, 4>& base_quat,
   e.body_q.assign(std::begin(body_q), std::end(body_q));
   e.body_dq.assign(std::begin(body_dq), std::end(body_dq));
   e.last_action.assign(std::begin(last_action), std::end(last_action));
+  e.motor_temperature.assign(std::begin(motor_temperature), std::end(motor_temperature));
+  e.motor_error.assign(std::begin(motor_error), std::end(motor_error));
+  e.motor_torque.assign(std::begin(motor_torque), std::end(motor_torque));
 
   // Copy hand state and action containers
   e.left_hand_q.assign(std::begin(left_hand_q), std::end(left_hand_q));
@@ -291,6 +300,9 @@ void StateLogger::appendCsvLinesSplit_(const Entry& e) {
   sink_q_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(body_q_measured));
   sink_dq_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(body_dq_measured));
   sink_action_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.last_action));
+  sink_motor_temperature_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.motor_temperature));
+  sink_motor_error_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.motor_error));
+  sink_motor_torque_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.motor_torque));
   sink_left_hand_q_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.left_hand_q));
   sink_left_hand_dq_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.left_hand_dq));
   sink_right_hand_q_.writeLine(idx, t_ms, t_realtime_ms, t_monotonic_ms, t_ros, std::span(e.right_hand_q));
@@ -472,6 +484,9 @@ Entry StateLogger::makeZeroEntry_() const {
   if (configured_num_joints_ > 0) {
     e.body_q.assign(static_cast<size_t>(configured_num_joints_), 0.0);
     e.body_dq.assign(static_cast<size_t>(configured_num_joints_), 0.0);
+    e.motor_temperature.assign(static_cast<size_t>(configured_num_joints_) * 2, 0.0);
+    e.motor_error.assign(static_cast<size_t>(configured_num_joints_), 0.0);
+    e.motor_torque.assign(static_cast<size_t>(configured_num_joints_), 0.0);
   }
   if (configured_num_actions_ > 0) {
     e.last_action.assign(static_cast<size_t>(configured_num_actions_), 0.0);

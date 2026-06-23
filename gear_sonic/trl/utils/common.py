@@ -35,6 +35,21 @@ def recursive_set_struct(cfg, struct_value: bool):
                 recursive_set_struct(item, struct_value)
 
 
+def materialize_lazy_params(policy, env):
+    """Materialize lazy parameters (nn.LazyLinear, nn.LazyConv2d) with a dummy forward pass.
+
+    Must be called before DDP wrapping, since accelerator.prepare() requires all params initialized.
+    Uses env.reset() with default flatten_dict_obs=True to get flat tensors (not sub-dicts).
+    """
+    import torch
+    import torch.nn as nn
+
+    if any(isinstance(m, (nn.LazyLinear, nn.LazyConv2d)) for m in policy.modules()):
+        dummy_obs = env.reset()
+        with torch.no_grad():
+            policy.act(dummy_obs)
+
+
 def get_filtered_state_dict(state_dict, state_dict_key):
     """
     Filter state_dict keys that start with the given prefix and remove the prefix.

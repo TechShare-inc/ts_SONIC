@@ -36,9 +36,9 @@ python gear_sonic/scripts/run_sim_loop.py
 ```bash
 cd gear_sonic_deploy
 # For simulation:
-bash deploy.sh sim --input-type zmq_manager
+bash deploy.sh --input-type zmq_manager sim
 # For real robot:
-# bash deploy.sh real --input-type zmq_manager
+# bash deploy.sh --input-type zmq_manager real
 ```
 
 **Terminal 3 — PICO Teleop Streamer**:

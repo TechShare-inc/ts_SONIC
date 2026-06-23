@@ -15,7 +15,8 @@ import struct
 import json
 import time
 import argparse
-import sys
+
+HEADER_SIZE = 1280  # Must match ZMQPackedMessageSubscriber::HEADER_SIZE
 
 class ZMQPublisher:
     """Publisher for ZMQManager topics"""
@@ -62,9 +63,9 @@ class ZMQPublisher:
             "fields": fields
         }
         
-        # Serialize header (pad to 1024 bytes)
+        # Serialize header (pad to HEADER_SIZE bytes to match C++ ZMQPackedMessageSubscriber)
         header_json = json.dumps(header).encode('utf-8')
-        header_bytes = header_json + b'\x00' * (1024 - len(header_json))
+        header_bytes = header_json + b'\x00' * (HEADER_SIZE - len(header_json))
         
         # Serialize data
         data = b''
@@ -146,9 +147,9 @@ class ZMQPublisher:
             "fields": fields,
         }
         
-        # Serialize header (pad to 1024 bytes)
+        # Serialize header (pad to HEADER_SIZE bytes)
         header_json = json.dumps(header).encode('utf-8')
-        header_bytes = header_json + b'\x00' * (1024 - len(header_json))
+        header_bytes = header_json + b'\x00' * (HEADER_SIZE - len(header_json))
         
         # Serialize data (little-endian)
         data = b''
@@ -204,9 +205,9 @@ class ZMQPublisher:
             ]
         }
         
-        # Serialize header (pad to 1024 bytes)
+        # Serialize header (pad to HEADER_SIZE bytes)
         header_json = json.dumps(header).encode('utf-8')
-        header_bytes = header_json + b'\x00' * (1024 - len(header_json))
+        header_bytes = header_json + b'\x00' * (HEADER_SIZE - len(header_json))
         
         # Serialize data (little-endian, row-major)
         data = b''
@@ -430,336 +431,224 @@ def test_pose_sequence(publisher):
     print("Shoulder waving complete!")
 
 
-def test_combined_sequence(publisher):
-    """Test all topics together in a realistic scenario"""
-    print("\n=== Testing Full Combined Sequence ===")
-    
-    # 1. Start control with planner mode
-    print("\nStep 1: Starting control with planner mode...")
-    publisher.send_command(start=True, stop=False, planner=True)
-    time.sleep(0.5)
-    
+def _run_planner_and_streamed_steps(publisher):
+    """Steps 2-13: planner walking, streamed motion, upper body control."""
     # 2. Send initial pose data
+    input("\n[Press ENTER to begin streaming]")
     print("Step 2: Sending initial pose data...")
     frame_idx = 0
     for i in range(3):
-        # Shoulder-only pose (others are zeros)
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=10, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,  # moderate motion
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 10
         time.sleep(0.05)
-    
+
     # 3. Walk forward for 3 seconds
     print("Step 3: Walking forward (3 seconds)...")
-    for i in range(30):  # 3 seconds at 10 Hz
+    for i in range(30):
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[1.0, 0.0, 0.0],  # Forward
-            facing=[1.0, 0.0, 0.0],    # Face forward
-            speed=-1.0,
-            height=-1.0
+            mode=2, movement=[1.0, 0.0, 0.0], facing=[1.0, 0.0, 0.0],
+            speed=-1.0, height=-1.0
         )
-        
-        # Also send pose data (shoulder-only waving; others remain zero)
-        # 5 frames per 0.1s -> 50 Hz equivalent streaming.
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
+
     # 4. Turn around (rotate 180 degrees)
     print("Step 4: Turning around...")
-    for i in range(20):  # 2 seconds
-        # Calculate gradual rotation (from [1,0,0] to [-1,0,0])
+    for i in range(20):
         angle = np.pi * (i / 20.0)
-        facing_x = np.cos(angle)
-        facing_y = np.sin(angle)
-        
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[0.0, 0.0, 0.0],  # No movement, just rotation
-            facing=[facing_x, facing_y, 0.0],
-            speed=-1.0,
-            height=-1.0
+            mode=2, movement=[0.0, 0.0, 0.0],
+            facing=[np.cos(angle), np.sin(angle), 0.0],
+            speed=-1.0, height=-1.0
         )
-        
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
+
     # 5. Walk forward again (now facing backward)
     print("Step 5: Walking forward (after turn around) for 3 seconds...")
-    for i in range(30):  # 3 seconds
+    for i in range(30):
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[-1.0, 0.0, 0.0],  # Forward (in new direction)
-            facing=[-1.0, 0.0, 0.0],    # Face backward
-            speed=-1.0,
-            height=-1.0
+            mode=2, movement=[-1.0, 0.0, 0.0], facing=[-1.0, 0.0, 0.0],
+            speed=-1.0, height=-1.0
         )
-        
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
-    # 6. Switch to streamed motion mode
+
+    # 6. Mode switch test
     print("\nStep 6 - 1: Switching to streamed motion mode...")
     publisher.send_command(start=True, stop=False, planner=False)
     time.sleep(1.0)
-    # 6. Switch to streamed motion mode
     print("\nStep 6 - 2: Switching to planner motion mode...")
     publisher.send_command(start=True, stop=False, planner=True)
     time.sleep(1.0)
-    # 6. Switch to streamed motion mode
     print("\nStep 6 - 3: Switching to streamed motion mode...")
     publisher.send_command(start=True, stop=False, planner=False)
     time.sleep(1.0)
-    
-    # 7. Send shoulder pitch waving motion with rotation - send 2s, sleep 2s, send 2s, sleep 2s
+
+    # 7. Shoulder waving with rotation (streamed motion)
     print("Step 7: Waving shoulders with rotation (streamed motion)...")
-    
-    # First chunk: 2 seconds (100 frames at 50 Hz)
     chunk_duration = 2.0
-    frames_per_chunk = int(50 * chunk_duration)  # 50 Hz * 2s = 100 frames
-    
+    frames_per_chunk = int(50 * chunk_duration)
+
     print(f"  Chunk 1: Sending {frames_per_chunk} frames (2 seconds)...")
     joint_pos_1, joint_vel_1, body_quat_1, frame_indices_1 = generate_shoulder_pitch_waving(
-        num_frames=frames_per_chunk, 
-        num_joints=29, 
-        start_frame=frame_idx,
-        wave_amplitude=1.5,  # Very large shoulder motion (±1.5 rad = ±86°)
-        wave_frequency=0.5   # Slow wave (0.5 Hz)
+        num_frames=frames_per_chunk, num_joints=29, start_frame=frame_idx,
+        wave_amplitude=1.5, wave_frequency=0.5
     )
     publisher.send_pose(joint_pos_1, joint_vel_1, body_quat_1, frame_indices_1, catch_up=False)
     frame_idx += frames_per_chunk
-    
+
     print(f"  Waiting 2s for robot to play chunk 1 (with rotation)...")
-    # Send delta_heading commands during playback to rotate robot (20 steps over 2 seconds)
     for i in range(20):
-        # Gradually rotate from 0 to π/2 (90 degrees) during first chunk
         delta_heading = (np.pi / 2.0) * (i / 20.0)
         publisher.send_command(start=False, stop=False, planner=False, delta_heading=delta_heading)
         time.sleep(0.1)
-    
-    # Second chunk: 2 seconds (100 frames at 50 Hz) - CONTINUOUS frame indices
+
     print(f"  Chunk 2: Sending {frames_per_chunk} frames (2 seconds, continuous from frame {frame_idx})...")
     joint_pos_2, joint_vel_2, body_quat_2, frame_indices_2 = generate_shoulder_pitch_waving(
-        num_frames=frames_per_chunk, 
-        num_joints=29, 
-        start_frame=frame_idx,  # Continuous frame indices!
-        wave_amplitude=1.5,  # Very large shoulder motion
-        wave_frequency=0.5
+        num_frames=frames_per_chunk, num_joints=29, start_frame=frame_idx,
+        wave_amplitude=1.5, wave_frequency=0.5
     )
     publisher.send_pose(joint_pos_2, joint_vel_2, body_quat_2, frame_indices_2, catch_up=False)
     frame_idx += frames_per_chunk
-    
+
     print(f"  Waiting 2s for robot to play chunk 2 (continue rotation)...")
-    # Continue rotation from π/2 to π (90 to 180 degrees) during second chunk
     for i in range(20):
         delta_heading = (np.pi / 2.0) + (np.pi / 2.0) * (i / 20.0)
         publisher.send_command(start=False, stop=False, planner=False, delta_heading=delta_heading)
         time.sleep(0.1)
-    
-    # 8. Wait additional time in idle
+
+    # 8. Wait
     print("Step 8: Additional wait (2 seconds)...")
     time.sleep(2.0)
-    
+
     # 9. Switch back to planner mode
     print("\nStep 9: Switching back to planner mode...")
     publisher.send_command(start=True, stop=False, planner=True)
     time.sleep(1.0)
-    
+
     # 10. Walk forward again (3 seconds)
     print("Step 10: Walking forward again (3 seconds)...")
     for i in range(30):
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[1.0, 0.0, 0.0],  # Forward
-            facing=[1.0, 0.0, 0.0],
-            speed=-1.0,
-            height=-1.0
+            mode=2, movement=[1.0, 0.0, 0.0], facing=[1.0, 0.0, 0.0],
+            speed=-1.0, height=-1.0
         )
-        
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
+
     # 11. Turn around again (180 degrees)
     print("Step 11: Turning around again...")
     for i in range(20):
         angle = np.pi * (i / 20.0)
-        facing_x = np.cos(angle)
-        facing_y = np.sin(angle)
-        
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[0.0, 0.0, 0.0],  # No movement, just rotation
-            facing=[facing_x, facing_y, 0.0],
-            speed=-1.0,
-            height=-1.0
+            mode=2, movement=[0.0, 0.0, 0.0],
+            facing=[np.cos(angle), np.sin(angle), 0.0],
+            speed=-1.0, height=-1.0
         )
-        
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
-    # 12. Walk forward again (after second turn, 10 seconds)
+
+    # 12. Walk forward with upper body + hand control (10 seconds)
     print("Step 12: Walking forward again (after second turn, 10 seconds)...")
     print("         with upper body shoulder waving + hand open/close...")
     for i in range(100):
-        # Upper body joints (isaaclab order, 17-DOF subset) correspond to:
-        # [waist_yaw, waist_roll, waist_pitch,
-        #  L_shoulder_pitch, R_shoulder_pitch,
-        #  L_shoulder_roll,  R_shoulder_roll,
-        #  L_shoulder_yaw,   R_shoulder_yaw,
-        #  L_elbow,          R_elbow,
-        #  L_wrist_roll,     R_wrist_roll,
-        #  L_wrist_pitch,    R_wrist_pitch,
-        #  L_wrist_yaw,      R_wrist_yaw]
-        #
-        # Here we create a simple shoulder motion (pitch) while walking.
-        t = i / 100.0  # 0 to 1 over 10 seconds
+        t = i / 100.0
         pitch_amp = 0.5
-        omega = 2 * np.pi  # 1 Hz
-
+        omega = 2 * np.pi
         pitch = pitch_amp * np.sin(omega * t)
         pitch_dot = pitch_amp * omega * np.cos(omega * t)
 
         upper_body_position = [0.0] * 17
         upper_body_velocity = [0.0] * 17
-
-        # Shoulder pitch: mirror left/right
-        upper_body_position[3] = pitch        # L_shoulder_pitch
-        upper_body_position[4] = -pitch       # R_shoulder_pitch
+        upper_body_position[3] = pitch
+        upper_body_position[4] = -pitch
         upper_body_velocity[3] = pitch_dot
         upper_body_velocity[4] = -pitch_dot
 
-        # Hand joints: 7 DOF per hand
-        # Format: [thumb_pitch, thumb_roll, index, middle, ring, pinky, thumb_yaw]
-        # Base pose is CLOSED. Setting to 0 = OPEN.
-        # Square-wave pattern: 1s closed, 1s open, repeat (2s cycle)
-        time_seconds = i * 0.1  # i ranges 0-99, total 10 seconds
-        cycle_time = time_seconds % 2.0  # 2-second cycle
-        # hand_open_factor: 0 = closed (base), 1 = open (0)
-        hand_open_factor = 1.0 if cycle_time >= 1.0 else 0.0
-
-        # Left hand: interpolate between closed (base) and open (0)
+        time_seconds = i * 0.1
+        hand_open_factor = 1.0 if (time_seconds % 2.0) >= 1.0 else 0.0
         left_hand_base = [0.0, 0.0, 1.75, -1.57, -1.75, -1.57, -1.75]
-        left_hand_position = [
-            base * (1.0 - hand_open_factor) for base in left_hand_base
-        ]
-
-        # Right hand: interpolate between closed (base) and open (0)
+        left_hand_position = [b * (1.0 - hand_open_factor) for b in left_hand_base]
         right_hand_base = [0.0, 0.0, -1.75, 1.57, 1.75, 1.57, 1.75]
-        right_hand_position = [
-            base * (1.0 - hand_open_factor) for base in right_hand_base
-        ]
+        right_hand_position = [b * (1.0 - hand_open_factor) for b in right_hand_base]
 
         publisher.send_planner(
-            mode=2,  # WALK
-            movement=[-1.0, 0.0, 0.0],  # Forward (in new direction)
-            facing=[-1.0, 0.0, 0.0],    # Face backward after turn
-            speed=-1.0,
-            height=-1.0,
+            mode=2, movement=[-1.0, 0.0, 0.0], facing=[-1.0, 0.0, 0.0],
+            speed=-1.0, height=-1.0,
             upper_body_position=upper_body_position,
             upper_body_velocity=upper_body_velocity,
             left_hand_joints=left_hand_position,
             right_hand_joints=right_hand_position,
         )
-        
         joint_pos, joint_vel, body_quat, frame_indices = generate_shoulder_pitch_waving(
             num_frames=5, num_joints=29, start_frame=frame_idx,
-            wave_amplitude=0.5,
-            wave_frequency=1.0
+            wave_amplitude=0.5, wave_frequency=1.0
         )
         publisher.send_pose(joint_pos, joint_vel, body_quat, frame_indices)
         frame_idx += 5
-        
         time.sleep(0.1)
-    
+
     # 13. Return to idle
     print("Step 13: Returning to idle...")
     for i in range(10):
         publisher.send_planner(
-            mode=0,  # IDLE
-            movement=[0.0, 0.0, 0.0],
-            facing=[-1.0, 0.0, 0.0],
-            speed=-1.0,
-            height=-1.0
+            mode=0, movement=[0.0, 0.0, 0.0], facing=[-1.0, 0.0, 0.0],
+            speed=-1.0, height=-1.0
         )
         time.sleep(0.1)
+
+
+def test_combined_sequence(publisher):
+    """Test all topics together in a realistic scenario"""
+    print("\n=== Testing Full Combined Sequence ===")
     
+    # 1. Start control with planner mode
+    input("\n[Press ENTER to send START command]")
+    print("Step 1: Starting control with planner mode...")
+    publisher.send_command(start=True, stop=False, planner=True)
+    time.sleep(0.5)
+
+    _run_planner_and_streamed_steps(publisher)
+
     # 14. Stop control
     print("\nStep 14: Stopping control...")
-    publisher.send_command(start=False, stop=True, planner=True)
+    publisher.send_command(start=False, stop=True, planner=False)
     time.sleep(1.0)
-    
+
     print("\n=== Full sequence complete! ===")
-    print("Total duration: ~50 seconds")
-    print("  Phase 1 - Planner mode: 8 seconds")
-    print("    • Walk forward (3s)")
-    print("    • Turn around 180° (2s)")
-    print("    • Walk forward (3s)")
-    print("  Phase 2 - Streamed motion mode: 10 seconds")
-    print("    • Send chunk 1 (100 frames, 2s) → wait 2s for playback")
-    print("      During playback: send delta_heading commands (0 → π/2)")
-    print("    • Send chunk 2 (100 frames, 2s) → wait 2s for playback")
-    print("      During playback: send delta_heading commands (π/2 → π)")
-    print("    • Frame indices: 0-99, 100-199 (CONTINUOUS!)")
-    print("    • Wait additional 2s")
-    print("    Note: catch_up=False for real-time playback + delta_heading rotation")
-    print("  Phase 3 - Planner mode again: 18 seconds")
-    print("    • Walk forward (3s)")
-    print("    • Turn around 180° (2s)")
-    print("    • Walk forward again (10s) with:")
-    print("      - Upper body shoulder waving (pitch motion)")
-    print("      - Hand open/close motion (both hands synchronized)")
-    print("    • Return to idle (1s)")
-    print("  Transitions: 5 seconds")
-    print("\nThis test demonstrates:")
-    print("  ✓ Planner-based locomotion (walk forward, turn around, repeat)")
-    print("  ✓ Mode switching (planner → streamed → planner)")
-    print("  ✓ Streamed motion in chunks (send → wait → send → wait)")
-    print("  ✓ Continuous frame indices across chunks")
-    print("  ✓ Correct velocities for 50 Hz robot playback")
-    print("  ✓ Delta heading control (rotate robot during streamed motion)")
-    print("  ✓ Upper body control via planner (shoulder waving)")
-    print("  ✓ Hand joint control via planner (open/close motion)")
-    print("  ✓ Multiple mode switches in one session")
-    print("  ✓ Clean shutdown")
+    print("  Phase 1 - Planner mode (steps 1-5): walk, turn, walk")
+    print("  Phase 2 - Streamed motion v1 (steps 6-8): shoulder waving + delta heading")
+    print("  Phase 3 - Planner + upper body (steps 9-13): walk with hands")
 
 
 def main():

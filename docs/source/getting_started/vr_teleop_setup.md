@@ -19,9 +19,29 @@ XRoboToolkit consists of a PC service (running on your workstation) and a PICO a
 
 ### PC Service
 
-1. Go to [https://github.com/XR-Robotics](https://github.com/XR-Robotics).
-2. Follow the **"Install XRoboToolkit-PC-Service"** instructions to install the PC service on your workstation.
-3. For onboard run `sudo dpkg -i gear_sonic_deploy/thirdparty/roboticsservice_1.0.0.0_arm64.deb`
+The PC service must be installed and running on your workstation **before** the PICO can connect.
+
+**Ubuntu 22.04 (x86_64 workstation):**
+
+```bash
+wget https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
+sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_22.04_amd64.deb
+```
+
+**Ubuntu 24.04 (x86_64 workstation):**
+
+```bash
+wget https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases/download/v1.0.0/XRoboToolkit_PC_Service_1.0.0_ubuntu_24.04_amd64.deb
+sudo dpkg -i XRoboToolkit_PC_Service_1.0.0_ubuntu_24.04_amd64.deb
+```
+
+**Jetson (aarch64, onboard):**
+
+```bash
+sudo dpkg -i gear_sonic_deploy/thirdparty/roboticsservice_1.0.0.0_arm64.deb
+```
+
+See [XRoboToolkit-PC-Service releases](https://github.com/XR-Robotics/XRoboToolkit-PC-Service/releases) for other platforms or newer versions.
 
 ### PICO App
 

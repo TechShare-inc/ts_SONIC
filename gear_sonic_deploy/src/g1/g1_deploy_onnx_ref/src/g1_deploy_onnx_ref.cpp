@@ -133,6 +133,9 @@
 // Dex3 hands
 #include "../include/dex3_hands.hpp"
 
+// Error monitor
+#include "../include/error_monitor.hpp"
+
 #include "audio_thread/audio_thread.hpp"
 
 // DDS
@@ -228,6 +231,17 @@ class G1Deploy {
     float replan_interval_ = 1.0;
     float replan_interval_counter_ = 0.0f;
 
+    // Idle-mode error-based readaptation with double-threshold state machine.
+    // States: IDLE (do nothing), ADAPTING (toward robot state), RECOVERING (toward planner target).
+    // Each state has a trigger threshold (enter) and stop threshold (exit).
+    enum class IdleReadaptState { IDLE, ADAPTING, RECOVERING };
+    std::array<double, 29> idle_readapt_original_targets_{};
+    bool idle_readapt_stored_ = false;
+    IdleReadaptState idle_readapt_state_ = IdleReadaptState::IDLE;
+    static constexpr double kAdaptTrigger  = 0.10;   // rad: start adapting
+    static constexpr double kAdaptStop     = 0.05;   // rad: stop adapting → IDLE
+    static constexpr double kRecoverTrigger = 0.045;  // rad: start recovering
+
     
     // =========================================================================
     // Low-level robot I/O buffers, channels, and threads
@@ -236,6 +250,16 @@ class G1Deploy {
     bool disable_crc_check_ = false;
     
     bool reinitialize_heading_ = true;
+    bool report_temperature_ = false;
+    std::string pending_tts_;  // One-shot TTS message, consumed by GatherInputInterfaceData()
+
+    // Per-motor high temperature hysteresis (enter at >= 90, exit at < 85)
+    std::array<bool, G1_NUM_MOTOR> motor_high_temp_ = {};
+    static constexpr int16_t HIGH_TEMP_ENTER = 90;
+    static constexpr int16_t HIGH_TEMP_EXIT = 85;
+    bool high_temp_warning_ = false;
+    std::string high_temp_message_;
+
     std::array<double, 4> init_ref_data_root_rot_array_;
 
     DataBuffer<LowState_> low_state_buffer_;
@@ -257,6 +281,9 @@ class G1Deploy {
     // Dex3 hands manager
     Dex3Hands dex3_hands_;
 
+    // Motor error monitor (tracks fault state transitions)
+    ErrorMonitor error_monitor_;
+
     static constexpr std::chrono::milliseconds STREAMING_DATA_ABSENT_THRESHOLD{150};
     CounterDebouncer streaming_data_absent_debouncer_{100, 500, 50, 1};
     RollingStats<1000> streaming_data_delay_rolling_stats_;
@@ -265,6 +292,8 @@ class G1Deploy {
     // =========================================================================
     // Program state and last commanded actions
     // =========================================================================
+    static constexpr std::chrono::milliseconds LOW_STATE_LATE_THRESHOLD{50};
+    static constexpr std::chrono::milliseconds LOW_STATE_ABSENT_THRESHOLD{500};
     ProgramState program_state_;
     std::array<double, G1_NUM_MOTOR> last_action;
     std::array<double, 7> last_left_hand_action;
@@ -320,6 +349,11 @@ class G1Deploy {
     bool is_using_encoder_ = false;
     int initial_encoder_mode_ = -2;  // -2: no token state. -1: need token state but no encoder. 0,1,2,...: encoder mode.
     int last_logged_encoder_mode_ = -999;  // Track last logged mode to avoid spam
+    
+    // Token input safety tracking
+    bool first_token_received_ = false;  // True once we've received at least one token
+    std::optional<std::chrono::steady_clock::time_point> last_token_time_;  // Timestamp of last token received
+    static constexpr std::chrono::milliseconds TOKEN_TIMEOUT_MS{200};  // Max time between tokens before warning (200ms = 5Hz min)
     
     // Control policy
     std::unique_ptr<PolicyEngine> policy_engine_;
@@ -511,11 +545,75 @@ class G1Deploy {
      *
      * Also handles heading reinitialisation when `reinitialize_heading_` is set.
      */
-    bool GatherMotionAnchorOrientationMutiFrame(std::vector<double>& target_buffer, size_t offset, int num_frames = 5, int step_size = 5) {
-      if (!current_motion_ || current_motion_->timesteps == 0) { 
-        return false; 
+    /**
+     * @brief Update heading state — must be called once per control tick BEFORE gathering observations.
+     *
+     * Handles heading reinitialisation (when operator triggers reset) and
+     * ensures init_ref_data_root_rot_array_ is set when starting from frame 0.
+     * This shared state is consumed by all orientation observation functions.
+     */
+    void UpdateHeadingState() {
+      if (!current_motion_ || current_motion_->timesteps == 0) { return; }
+      if (current_motion_->GetNumBodyQuaternions() == 0) { return; }
+      if (!state_logger_) { return; }
+
+      if (reinitialize_heading_) {
+        double sample_dt = control_dt_;
+        auto hist = state_logger_->GetLatest(1, sample_dt);
+        const auto& base_quat = hist[0].base_quat;
+
+        heading_state_buffer_.SetData(HeadingState(base_quat, 0.0));
+        reinitialize_heading_ = false;
+        const auto motion_body_quat_init = current_motion_->BodyQuaternions(current_frame_);
+        init_ref_data_root_rot_array_ = motion_body_quat_init[0];
+        std::cout << "Reset heading state to " << base_quat[0] << ", " << base_quat[1] << ", " << base_quat[2] << ", " << base_quat[3] << std::endl;
+        std::cout << "Reset delta heading to 0" << std::endl;
+        std::cout << "Reset init reference data root rotation to current frame: " << init_ref_data_root_rot_array_[0] << ", " << init_ref_data_root_rot_array_[1] << ", " << init_ref_data_root_rot_array_[2] << ", " << init_ref_data_root_rot_array_[3] << std::endl;
+        std::cout << "**********************************************************" << std::endl;
+        std::cout << "Reference motion name: " << current_motion_->name << std::endl;
+        std::cout << "**********************************************************" << std::endl;
       }
-      
+
+      if (current_frame_ == 0) {
+        const auto motion_body_quat_init = current_motion_->BodyQuaternions(0);
+        init_ref_data_root_rot_array_ = motion_body_quat_init[0];
+      }
+    }
+
+    /**
+     * @brief Compute the apply_delta_heading quaternion from current heading state.
+     *
+     * This is a pure computation with no side effects — safe to call from any
+     * observation function. Reads heading_state_buffer_ and init_ref_data_root_rot_array_.
+     */
+    std::array<double, 4> ComputeApplyDeltaHeading() {
+      auto heading_state_data = heading_state_buffer_.GetDataWithTime().data;
+      HeadingState heading_state = heading_state_data ? *heading_state_data : HeadingState();
+
+      auto init_heading = calc_heading_quat_d(heading_state.init_base_quat);
+      auto data_heading_inv = calc_heading_quat_inv_d(init_ref_data_root_rot_array_);
+      auto apply_delta_heading = quat_mul_d(init_heading, data_heading_inv);
+
+      if (heading_state.delta_heading != 0.0) {
+        auto delta_quat = euler_z_to_quat_d(heading_state.delta_heading);
+        apply_delta_heading = quat_mul_d(delta_quat, apply_delta_heading);
+      }
+      return apply_delta_heading;
+    }
+
+    /**
+     * @brief Gather anchor orientation from N future frames with configurable orientation mode.
+     *
+     * @param orientation_mode Controls which quaternion is used as the "left" side of the diff:
+     *   - 0: full base quaternion (existing motion_anchor_ori_b)
+     *   - 1: robot heading only (heading setting: motion_anchor_ori_heading)
+     *   - 2: reference first-frame heading (refheading setting: motion_anchor_ori_refheading)
+     */
+    bool GatherMotionAnchorOrientationMutiFrame(std::vector<double>& target_buffer, size_t offset, int num_frames = 5, int step_size = 5, int orientation_mode = 0) {
+      if (!current_motion_ || current_motion_->timesteps == 0) {
+        return false;
+      }
+
       if (current_motion_->GetNumBodyQuaternions() == 0) {
         std::cout << "✗ Error: No motion_body_quat data available. Stopping control system." << std::endl;
         return false;
@@ -526,42 +624,22 @@ class G1Deploy {
       auto hist = state_logger_->GetLatest(1, sample_dt);
       const auto& base_quat = hist[0].base_quat;
 
+      auto apply_delta_heading = ComputeApplyDeltaHeading();
 
-      if (reinitialize_heading_) {
-        heading_state_buffer_.SetData(HeadingState(base_quat, 0.0));
-        reinitialize_heading_ = false;
-        const auto motion_body_quat_init = current_motion_->BodyQuaternions(current_frame_);
-        init_ref_data_root_rot_array_ = motion_body_quat_init[0];
-        std::cout << "Reset heading state to " << base_quat[0] << ", " << base_quat[1] << ", " << base_quat[2] << ", " << base_quat[3] << std::endl;
-        std::cout << "Reset delta heading to 0" << std::endl;
-        std::cout << "Reset init reference data root rotation to current frame: " << init_ref_data_root_rot_array_[0] << ", " << init_ref_data_root_rot_array_[1] << ", " << init_ref_data_root_rot_array_[2] << ", " << init_ref_data_root_rot_array_[3] << std::endl;
-        std::cout << "Reference motion name: " << current_motion_->name << std::endl;
+      // For refheading mode (2): pre-compute the first future frame's ref heading
+      // This is used as the "left" quaternion for ALL frames in the loop
+      std::array<double, 4> ref_first_heading = {1.0, 0.0, 0.0, 0.0};
+      if (orientation_mode == 2) {
+        int first_target_frame = static_cast<int>(current_frame_);
+        // first future frame is always frame_idx=0, so no step offset
+        if (first_target_frame >= static_cast<int>(current_motion_->timesteps)) {
+          first_target_frame = static_cast<int>(current_motion_->timesteps) - 1;
+        }
+        const auto first_body_quat = current_motion_->BodyQuaternions(first_target_frame);
+        auto first_ref_rot = quat_mul_d(apply_delta_heading, first_body_quat[0]);
+        ref_first_heading = calc_heading_quat_d(first_ref_rot);
       }
-      
 
-      // Get heading state atomically (both quaternion and delta heading together)
-      auto heading_state_data = heading_state_buffer_.GetDataWithTime().data;
-      HeadingState heading_state = heading_state_data ? *heading_state_data : HeadingState();
-      
-      // Calculate initial heading from robot root pose (using double precision functions)
-      auto init_heading = calc_heading_quat_d(heading_state.init_base_quat);
-      
-      // Calculate inverse heading from reference data
-      if (current_frame_ == 0) { 
-        const auto motion_body_quat_init = current_motion_->BodyQuaternions(0);
-        init_ref_data_root_rot_array_ = motion_body_quat_init[0];
-      }
-      auto data_heading_inv = calc_heading_quat_inv_d(init_ref_data_root_rot_array_);
-      
-      // Apply delta heading calculation
-      auto apply_delta_heading = quat_mul_d(init_heading, data_heading_inv);
-      
-      // Apply additional delta heading if specified
-      if (heading_state.delta_heading != 0.0) {
-        auto delta_quat = euler_z_to_quat_d(heading_state.delta_heading);
-        apply_delta_heading = quat_mul_d(delta_quat, apply_delta_heading);
-      }
-      
       // Gather orientations from multiple future frames with step intervals
       for (int frame_idx = 0; frame_idx < num_frames; frame_idx++) {
         // Calculate target frame: if playing, advance through frames; if not playing, hold current frame
@@ -573,18 +651,29 @@ class G1Deploy {
             target_frame = static_cast<int>(current_motion_->timesteps) - 1;
           }
         }
-        
+
         // Get reference data root rotation at this target frame (first body part, index 0)
         const auto motion_body_quat = current_motion_->BodyQuaternions(target_frame);
         std::array<double, 4> ref_data_root_rot_array = motion_body_quat[0];
-        
+
         // Calculate new reference root rotation with heading applied
         auto new_ref_root_rot = quat_mul_d(apply_delta_heading, ref_data_root_rot_array);
-        
-        // Calculate motion_anchor_ori_b: relative rotation from base to reference at this timestep
-        auto base_to_ref_quat = quat_mul_d(quat_conjugate_d(base_quat), new_ref_root_rot);
+
+        // Calculate relative rotation based on orientation_mode:
+        //   0: full base quaternion (motion_anchor_ori_b)
+        //   1: robot heading only (motion_anchor_ori_heading)
+        //   2: reference first-frame heading (motion_anchor_ori_refheading)
+        std::array<double, 4> left_quat;
+        if (orientation_mode == 1) {
+          left_quat = calc_heading_quat_d(base_quat);
+        } else if (orientation_mode == 2) {
+          left_quat = ref_first_heading;
+        } else {
+          left_quat = base_quat;
+        }
+        auto base_to_ref_quat = quat_mul_d(quat_conjugate_d(left_quat), new_ref_root_rot);
         auto rotation_matrix = quat_to_rotation_matrix_d(base_to_ref_quat);
-        
+
         // Extract first 2 columns of rotation matrix and flatten ROW-WISE to 1D array (6 elements)
         // Python: .as_matrix()[..., :2].reshape(1, -1) flattens row by row
         std::array<double, 6> motion_anchor_ori_b = {
@@ -592,12 +681,52 @@ class G1Deploy {
             rotation_matrix[1][0], rotation_matrix[1][1], // Row 1, cols 0-1
             rotation_matrix[2][0], rotation_matrix[2][1] // Row 2, cols 0-1
         };
-        
+
         // Copy to observation buffer at the appropriate offset for this frame
         size_t frame_offset = offset + frame_idx * 6; // 6 values per frame
         std::copy(motion_anchor_ori_b.begin(), motion_anchor_ori_b.end(), target_buffer.begin() + frame_offset);
       }
-      
+
+      return true;
+    }
+
+    /**
+     * @brief Gather heading_diff_robot_ref: yaw diff from robot to reference first frame.
+     *
+     * Used by g1_dyn decoder in the refheading setting.
+     * Output: 6D rotation = quat_to_6d(quat_inv(robot_heading) * ref_first_heading)
+     */
+    bool GatherHeadingDiffRobotRef(std::vector<double>& target_buffer, size_t offset) {
+      if (!current_motion_ || current_motion_->timesteps == 0) { return false; }
+      if (current_motion_->GetNumBodyQuaternions() == 0) { return false; }
+      if (!state_logger_) { return false; }
+
+      double sample_dt = control_dt_;
+      auto hist = state_logger_->GetLatest(1, sample_dt);
+      const auto& base_quat = hist[0].base_quat;
+
+      auto apply_delta_heading = ComputeApplyDeltaHeading();
+
+      // Get reference root quat at current frame (first future frame = frame_0)
+      int first_frame = static_cast<int>(current_frame_);
+      if (first_frame >= static_cast<int>(current_motion_->timesteps)) {
+        first_frame = static_cast<int>(current_motion_->timesteps) - 1;
+      }
+      const auto first_body_quat = current_motion_->BodyQuaternions(first_frame);
+      auto ref_root_rot = quat_mul_d(apply_delta_heading, first_body_quat[0]);
+
+      // Compute: quat_inv(robot_heading) * ref_first_heading
+      auto robot_heading = calc_heading_quat_d(base_quat);
+      auto ref_first_heading = calc_heading_quat_d(ref_root_rot);
+      auto diff_quat = quat_mul_d(quat_conjugate_d(robot_heading), ref_first_heading);
+
+      auto rotation_matrix = quat_to_rotation_matrix_d(diff_quat);
+      std::array<double, 6> heading_diff = {
+          rotation_matrix[0][0], rotation_matrix[0][1],
+          rotation_matrix[1][0], rotation_matrix[1][1],
+          rotation_matrix[2][0], rotation_matrix[2][1]
+      };
+      std::copy(heading_diff.begin(), heading_diff.end(), target_buffer.begin() + offset);
       return true;
     }
 
@@ -1587,6 +1716,16 @@ class G1Deploy {
               {"motion_root_z_position_3frame_step1", 3, [this](std::vector<double>& buf, size_t offset) { return GatherMotionRootZPositionMultiFrame(buf, offset, 3, 1); }},
               {"motion_anchor_orientation_10frame_step5", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 5); }},
               {"motion_anchor_orientation_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1); }},
+              // Heading-only variants (mode=1): use robot yaw-only quaternion
+              // Matches Python heading setting: quat_mul(quat_inv(get_heading_q(robot_pelvis_quat)), ref_quat)
+              {"motion_anchor_orientation_heading", 6, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 1, 1, 1); }},
+              {"motion_anchor_orientation_heading_10frame_step5", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 5, 1); }},
+              {"motion_anchor_orientation_heading_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1, 1); }},
+              // Refheading variants (mode=2): use reference first-frame yaw-only quaternion (no robot state)
+              // Matches Python refheading setting: quat_mul(quat_inv(get_heading_q(ref_first_frame)), ref_quat)
+              {"motion_anchor_orientation_refheading", 6, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 1, 1, 2); }},
+              {"motion_anchor_orientation_refheading_10frame_step5", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 5, 2); }},
+              {"motion_anchor_orientation_refheading_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1, 2); }},
               {"motion_joint_positions_10frame_step5", 290, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 10, 5); }},
               {"motion_joint_velocities_10frame_step5", 290, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointVelocitiesMultiFrame(buf, offset, 10, 5); }},
               {"motion_joint_positions_10frame_step1", 290, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 10, 1); }},
@@ -1599,6 +1738,7 @@ class G1Deploy {
               {"motion_joint_velocities_lowerbody_10frame_step1", 120, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointVelocitiesMultiFrame(buf, offset, 10, 1, lower_body_joint_mujoco_order_in_isaaclab_index); }},
               {"motion_joint_positions_wrists_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 10, 1, wrist_joint_isaaclab_order_in_isaaclab_index); }},
               {"motion_joint_positions_wrists_2frame_step1", 12, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 2, 1, wrist_joint_isaaclab_order_in_isaaclab_index); }},
+              {"motion_joint_positions_wrists_4frame_step1", 24, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 4, 1, wrist_joint_isaaclab_order_in_isaaclab_index); }},  // low-latency SONIC (smpl 4-frame)
               {"motion_joint_velocities_wrists_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointVelocitiesMultiFrame(buf, offset, 10, 1, wrist_joint_isaaclab_order_in_isaaclab_index); }},
               {"motion_joint_positions_5frame_step5", 145, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointPositionsMultiFrame(buf, offset, 5, 5); }},
               {"motion_joint_velocities_5frame_step5", 145, [this](std::vector<double>& buf, size_t offset) { return GatherMotionJointVelocitiesMultiFrame(buf, offset, 5, 5); }},
@@ -1608,7 +1748,8 @@ class G1Deploy {
               {"smpl_joints_10frame_step5", 720, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplJointsMultiFrame(buf, offset, 10, 5); }},  // 24*3*10
               {"smpl_joints_10frame_step1", 720, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplJointsMultiFrame(buf, offset, 10, 1); }},  // 24*3*10
               {"smpl_joints_lower_10frame_step1", 270, [this](std::vector<double>& buf, size_t offset) {return GatherMotionSmplJointsMultiFrame(buf, offset, 10, 1, {0,1,2,4,5,7,8,10,11}); }},  // 9*3*10 lower body joints
-              {"smpl_joints_2frame_step1", 144, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplJointsMultiFrame(buf, offset, 2, 1); }},  // 24*3*10
+              {"smpl_joints_2frame_step1", 144, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplJointsMultiFrame(buf, offset, 2, 1); }},  // 24*3*2
+              {"smpl_joints_4frame_step1", 288, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplJointsMultiFrame(buf, offset, 4, 1); }},  // 24*3*4, low-latency SONIC
               {"smpl_pose", 63, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplPosesMultiFrame(buf, offset, 1, 1); }},  // 21*3
               {"smpl_pose_5frame_step5", 315, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplPosesMultiFrame(buf, offset, 5, 5); }},  // 21*3*5
               {"smpl_pose_10frame_step5", 630, [this](std::vector<double>& buf, size_t offset) { return GatherMotionSmplPosesMultiFrame(buf, offset, 10, 5); }},  // 21*3*10
@@ -1617,6 +1758,15 @@ class G1Deploy {
               {"smpl_root_z_10frame_step1", 10, [this](std::vector<double>& buf, size_t offset) { return GatherMotionRootZPositionMultiFrame(buf, offset, 10, 1); }},
               {"smpl_anchor_orientation_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1); }},
               {"smpl_anchor_orientation_2frame_step1", 12, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 2, 1); }},
+              {"smpl_anchor_orientation_4frame_step1", 24, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 4, 1); }},  // low-latency SONIC (smpl 4-frame)
+              // SMPL heading-only variants (mode=1, matches Python smpl_root_ori_heading_multi_future)
+              {"smpl_anchor_orientation_heading_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1, 1); }},
+              {"smpl_anchor_orientation_heading_2frame_step1", 12, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 2, 1, 1); }},
+              // SMPL refheading variants (mode=2, matches Python smpl_root_ori_refheading_multi_future)
+              {"smpl_anchor_orientation_refheading_10frame_step1", 60, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 10, 1, 2); }},
+              {"smpl_anchor_orientation_refheading_2frame_step1", 12, [this](std::vector<double>& buf, size_t offset) { return GatherMotionAnchorOrientationMutiFrame(buf, offset, 2, 1, 2); }},
+              // Heading diff: yaw from robot to reference first frame (refheading decoder input)
+              {"heading_diff_robot_ref", 6, [this](std::vector<double>& buf, size_t offset) { return GatherHeadingDiffRobotRef(buf, offset); }},
               // VR 3-point data gathering
               {"vr_3point_local_target", 9, [this](std::vector<double>& buf, size_t offset) { return GatherVR3PointPosition(buf, offset); }},
               // NOTE: In the TELEOP time, the vr_3point_local_target == vr_3point_local_target_compliant
@@ -2403,8 +2553,11 @@ class G1Deploy {
 #endif
 
       if (create_zmq) {
-        output_interfaces_.push_back(std::make_unique<ZMQOutputHandler>(*state_logger_, zmq_out_port, zmq_out_topic));
+        auto zmq_handler = std::make_unique<ZMQOutputHandler>(*state_logger_, zmq_out_port, zmq_out_topic);
         std::cout << "Initialized ZMQ output interface" << std::endl;
+        // Publish robot config so subscribers can receive it before control loop starts
+        zmq_handler->publish_config();
+        output_interfaces_.push_back(std::move(zmq_handler));
       }
 
 #if HAS_ROS2
@@ -2472,6 +2625,15 @@ class G1Deploy {
                     << std::endl;
           return;
         }
+      }
+
+      // Check motor error states (prints only on transitions)
+      {
+        std::array<uint32_t, G1_NUM_MOTOR> motorstates;
+        for (int i = 0; i < G1_NUM_MOTOR; ++i) {
+          motorstates[i] = low_state.motor_state()[i].motorstate();
+        }
+        error_monitor_.update(motorstates);
       }
 
       low_state_buffer_.SetData(low_state);
@@ -2598,6 +2760,24 @@ class G1Deploy {
       return true;
     }
 
+    /// Check for valid LowState data and recent updates; if invalid, transition to ERROR state.
+    bool CheckSafety() {
+      auto low_state_data = low_state_buffer_.GetDataWithTime();
+      const std::shared_ptr<const LowState_> ls = low_state_data.data;
+      if (!ls) {
+        std::cout << "[ERROR] LowState data is not available in the middle of the control loop!" << std::endl;
+        return false;
+      }
+
+      auto now = std::chrono::steady_clock::now();
+      if (now - low_state_data.timestamp > LOW_STATE_ABSENT_THRESHOLD) {
+        std::cout << "[ERROR] Lost LowState data connection from robot!" << std::endl;
+        return false;
+      }
+
+      return true;
+    }
+
     /// Get current ROS 2 timestamp (seconds) from the first ROS2 output interface, or 0.0 if none.
     double GetRosTimestamp() {
       // Get ROS timestamp from the first ROS2 output interface (0.0 if none available)
@@ -2642,6 +2822,9 @@ class G1Deploy {
       std::array<double, G1_NUM_MOTOR> body_dq = {0.0};
 
       auto unitree_joint_state = ls->motor_state();
+      std::array<double, G1_NUM_MOTOR * 2> motor_temperature = {0.0};
+      std::array<double, G1_NUM_MOTOR> motor_error = {0.0};
+      std::array<double, G1_NUM_MOTOR> motor_torque = {0.0};
       for (int i = 0; i < G1_NUM_MOTOR; i++) {
         body_q[i] =
             unitree_joint_state[mujoco_to_isaaclab[i]].q() - default_angles[mujoco_to_isaaclab[i]]; // URDF order
@@ -2650,6 +2833,62 @@ class G1Deploy {
           std::cout << "✗ Error: body_dq[" << i << "] = " << body_dq[i] << " > 35."
                     << std::endl;
           return false;
+        }
+        // Extract motor temperature (2 values per motor: winding, driver) in hardware order
+        motor_temperature[i * 2]     = static_cast<double>(unitree_joint_state[i].temperature()[0]);
+        motor_temperature[i * 2 + 1] = static_cast<double>(unitree_joint_state[i].temperature()[1]);
+        // Extract motor error code in hardware order
+        motor_error[i] = static_cast<double>(unitree_joint_state[i].motorstate());
+        // Extract estimated torque in hardware order
+        motor_torque[i] = static_cast<double>(unitree_joint_state[i].tau_est());
+
+        // High temperature hysteresis check (enter >= 90, exit < 85)
+        int16_t max_temp = std::max(unitree_joint_state[i].temperature()[0],
+                                    unitree_joint_state[i].temperature()[1]);
+        if (motor_high_temp_[i]) {
+          if (max_temp < HIGH_TEMP_EXIT) { motor_high_temp_[i] = false; }
+        } else {
+          if (max_temp >= HIGH_TEMP_ENTER) { motor_high_temp_[i] = true; }
+        }
+      }
+
+      // Build high temperature warning message for audio
+      {
+        static const char* joint_names_hw[] = {
+          "Left Hip Pitch", "Left Hip Roll", "Left Hip Yaw", "Left Knee",
+          "Left Ankle Pitch", "Left Ankle Roll", "Right Hip Pitch", "Right Hip Roll",
+          "Right Hip Yaw", "Right Knee", "Right Ankle Pitch", "Right Ankle Roll",
+          "Waist Yaw", "Waist Roll", "Waist Pitch",
+          "Left Shoulder Pitch", "Left Shoulder Roll", "Left Shoulder Yaw", "Left Elbow",
+          "Left Wrist Roll", "Left Wrist Pitch", "Left Wrist Yaw",
+          "Right Shoulder Pitch", "Right Shoulder Roll", "Right Shoulder Yaw", "Right Elbow",
+          "Right Wrist Roll", "Right Wrist Pitch", "Right Wrist Yaw",
+        };
+        bool any_high = false;
+        std::string high_temp_msg = "Warning! High temperature at ";
+        std::string high_temp_print_msg = "Warning! High temperature at ";
+        bool first = true;
+        for (int i = 0; i < G1_NUM_MOTOR; ++i) {
+          if (motor_high_temp_[i]) {
+            any_high = true;
+            int16_t t = std::max(unitree_joint_state[i].temperature()[0],
+                                 unitree_joint_state[i].temperature()[1]);
+            if (!first) { high_temp_msg += ", "; high_temp_print_msg += ", "; }
+            high_temp_msg += joint_names_hw[i];
+            high_temp_print_msg += std::string(joint_names_hw[i]) + "(" + std::to_string(t) + ")";
+            first = false;
+          }
+        }
+        high_temp_warning_ = any_high;
+        high_temp_message_ = any_high ? high_temp_msg : "";
+
+        // Print to console at ~1s intervals while overheating (50 Hz control loop)
+        if (any_high) {
+          static int high_temp_print_counter = 0;
+          if (high_temp_print_counter % 50 == 0) {
+            std::cout << "[HighTemp] " << high_temp_print_msg << std::endl;
+          }
+          high_temp_print_counter++;
         }
       }
 
@@ -2691,6 +2930,9 @@ class G1Deploy {
                                     std::span(body_q),
                                     std::span(body_dq),
                                     std::span(last_action),
+                                    std::span(motor_temperature),
+                                    std::span(motor_error),
+                                    std::span(motor_torque),
                                     std::span(left_hand_q),
                                     std::span(left_hand_dq),
                                     std::span(right_hand_q),
@@ -2740,19 +2982,41 @@ class G1Deploy {
         bool streaming_data_absent = streaming_data_delay > STREAMING_DATA_ABSENT_THRESHOLD;
         streaming_data_absent_debouncer_.update(streaming_data_absent);
       }
-      
+
+      auto low_state_data = low_state_buffer_.GetDataWithTime();
+      bool low_state_late = (std::chrono::steady_clock::now() - low_state_data.timestamp) > LOW_STATE_LATE_THRESHOLD;
+
       audio_thread_->SetCommand(
         AudioCommand{
           .streaming_data_absent = streaming_data_absent_debouncer_.state(),
+          .motor_error = error_monitor_.hasErrors(),
+          .low_state_late = low_state_late,
+          .tts_message = std::move(pending_tts_),
+          .high_temperature = high_temp_warning_,
+          .high_temperature_message = high_temp_message_,
         });
+      pending_tts_.clear();
 
       // if encoder mode is not -2, we need to get the token state data either from the encoder or the external token state
       if (initial_encoder_mode_ != -2) {
-        // Reset the current token_state_data_ to zeros
-        token_state_data_.assign(token_state_data_.size(), 0.0);
         // get the external token state from the input interface
-        auto [has_ext_token_data, temp_token_state_data] = input_interface_->GetExternalTokenState();
-        if (has_ext_token_data && !temp_token_state_data.empty() && !is_using_encoder_) { // if encoder is used, the token state data will be set by the encoder
+        bool has_ext_token_data;
+        std::vector<double> temp_token_state_data;
+        {
+            std::lock_guard<std::mutex> motion_lock(current_motion_mutex_);
+            std::tie(has_ext_token_data, temp_token_state_data) = input_interface_->GetExternalTokenState();
+        }
+
+        // if the external token state is not empty, we need to copy the data to the token_state_data_
+        // and set the is_using_encoder_ to false
+        if (has_ext_token_data) {
+          if (temp_token_state_data.empty()) {
+            std::cout << "⚠ Warning: The external token state is empty" << std::endl;
+            std::cout << "but interface says it has external token state" << std::endl;
+            std::cout << "No copying happened." << std::endl;
+            return true;
+          }
+
           // check if the size of the temp_token_state_data is the same as the token_state_data_
           if (temp_token_state_data.size() != token_state_data_.size()) {
             std::cout << "⚠ Warning: The size of the external token state is not the same as what defined in the config file" << std::endl;
@@ -2761,33 +3025,68 @@ class G1Deploy {
             std::cout << "No copying happened." << std::endl;
           } else {
             std::copy(temp_token_state_data.begin(), temp_token_state_data.end(), token_state_data_.begin());
+            is_using_encoder_ = false;
+            // Safety: Mark that we've received at least one token
+            if (!first_token_received_) {
+              first_token_received_ = true;
+              std::cout << "[Token Safety] ✓ First token received! Control can now be started." << std::endl;
+            }
+            last_token_time_ = std::chrono::steady_clock::now();
+            
+            static int token_copy_count = 0;
+            if (token_copy_count % 50 == 0) {  // Warn every ~1 second
+              std::cout << "[Token Flow] Copied external tokens, tokens[0]=" << token_state_data_[0] << std::endl;
+
+            }
+            token_copy_count++;
           }
         } 
         else if (!has_ext_token_data && !is_using_encoder_) { // if encoder is not used and the external token state is empty
-          if (initial_encoder_mode_ == -1) { // if encoder mode is -1, we need to set start control to false and go back to INIT state since we need the token state data
-            std::cout << "⚠ Warning: No encoder is loaded and the external token state is empty" << std::endl;
-            std::cout << "Set start control to false and go back to INIT state" << std::endl;
-            operator_state.start = false;
-            program_state_ = ProgramState::INIT;
-            time_ = 0.0;
-            return false;
-          } else { 
-            // if encoder mode is not -1, we need to turn on the encoder stop the play 
-            // and reinitialize to reference motion at frame 0
-            std::cout << "⚠ Warning: No encoder is used and the external token state is empty" << std::endl;
-            std::cout << "Turning on the encoder and reinitialize to reference motion at frame 0" << std::endl;
-            is_using_encoder_ = true;
-            // Reset current motion and frame (protected by mutex)
-            {
-              std::lock_guard<std::mutex> lock(current_motion_mutex_);
-              operator_state.play = false;
-              current_frame_ = 0;
-              current_motion_ = motion_reader_.GetMotionShared(motion_reader_.current_motion_index_);
-              current_motion_->SetEncodeMode(0);
-              reinitialize_heading_ = true;
+          if (initial_encoder_mode_ == -1) { // no encoder is loaded, we need to wait for the external tokens
+            // Token input mode: waiting for external tokens
+            auto now = std::chrono::steady_clock::now();
+            
+            // Check if we've received first token
+            if (!first_token_received_) {
+              // Warn but don't block - allow control to start
+              static auto startup_time = std::chrono::steady_clock::now();
+              auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - startup_time);
+              
+              // Reset the current token_state_data_ to zeros
+              token_state_data_.assign(token_state_data_.size(), 0.0);
+              
+              static int wait_count = 0;
+              if (wait_count % 250 == 0) {  // Print every ~5 seconds (50Hz * 250 = 5s)
+                std::cout << "⚠ [Token Safety] WARNING: No tokens received yet (" 
+                          << elapsed.count() << "s elapsed). "
+                          << "Robot will use zero tokens until tokens start streaming." << std::endl;
+              }
+              wait_count++;
+            } else {
+              // We've received tokens before, check freshness
+              if (last_token_time_.has_value()) {
+                auto time_since_last = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - last_token_time_.value());
+                
+                if (time_since_last > TOKEN_TIMEOUT_MS) {
+                  static int stale_count = 0;
+                  if (stale_count % 50 == 0) {  // Warn every ~1 second
+                    std::cout << "⚠ [Token Safety] WARNING: No tokens received for " 
+                              << time_since_last.count() << "ms (timeout: " 
+                              << TOKEN_TIMEOUT_MS.count() << "ms). "
+                              << "Robot will use last received tokens." << std::endl;
+                  }
+                  stale_count++;
+                  // Don't pause - just warn
+                }
+              }
             }
-            // Reset movement state
-            movement_state_buffer_.SetData(MovementState(static_cast<int>(LocomotionMode::IDLE), {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, -1.0f, -1.0f));
+            
+          } else { 
+            // if encoder mode is not -1, we need to turn on the encoder
+            std::cout << "No encoder is used and not using external tokens" << std::endl;
+            std::cout << "Turning on the encoder now" << std::endl;
+            is_using_encoder_ = true;
           }
         }
       }
@@ -2992,6 +3291,7 @@ class G1Deploy {
             current_frame_ = 0;
             // Assign shared_ptr directly - planner_motion_ is already a shared_ptr
             current_motion_ = planner_motion_;
+            idle_readapt_stored_ = false;
             if(is_the_first_time) {
               reinitialize_heading_ = true;
             }
@@ -3003,6 +3303,68 @@ class G1Deploy {
           int new_frame = current_frame_ + 1;
             if (new_frame >= current_motion_->timesteps) {
               new_frame = current_motion_->timesteps - 1; // Clamp to last frame
+              // Error-based readaptation in idle mode with double-threshold state machine.
+              // IDLE: do nothing. ADAPTING: blend toward robot state. RECOVERING: blend toward planner target.
+              auto movement_state_data = movement_state_buffer_.GetDataWithTime().data;
+              if(movement_state_data && movement_state_data->locomotion_mode == static_cast<int>(LocomotionMode::IDLE)) {
+                auto low_state = low_state_buffer_.GetDataWithTime().data;
+                if (low_state) {
+                  auto motor_state = low_state->motor_state();
+
+                  // Store original planner targets on first entry
+                  if (!idle_readapt_stored_) {
+                    for (int idx : lower_body_joint_isaaclab_order_in_isaaclab_index) {
+                      idle_readapt_original_targets_[idx] = planner_motion_->JointPositions(new_frame)[idx];
+                    }
+                    idle_readapt_stored_ = true;
+                    idle_readapt_state_ = IdleReadaptState::IDLE;
+                  }
+
+                  // Compute average error across all lower-body joints
+                  double total_error = 0.0;
+                  for (int idx : lower_body_joint_isaaclab_order_in_isaaclab_index) {
+                    total_error += std::abs(planner_motion_->JointPositions(new_frame)[idx]
+                                            - motor_state[mujoco_to_isaaclab[idx]].q());
+                  }
+                  double avg_error = total_error / static_cast<double>(lower_body_joint_isaaclab_order_in_isaaclab_index.size());
+
+                  // State transitions
+                  switch (idle_readapt_state_) {
+                    case IdleReadaptState::IDLE:
+                      if (avg_error > kAdaptTrigger) {
+                        idle_readapt_state_ = IdleReadaptState::ADAPTING;
+                      } else if (avg_error < kRecoverTrigger) {
+                        idle_readapt_state_ = IdleReadaptState::RECOVERING;
+                      }
+                      break;
+                    case IdleReadaptState::ADAPTING:
+                      if (avg_error < kAdaptStop) {
+                        idle_readapt_state_ = IdleReadaptState::IDLE;
+                      }
+                      break;
+                    case IdleReadaptState::RECOVERING:
+                      if (avg_error > kAdaptTrigger) {
+                        idle_readapt_state_ = IdleReadaptState::ADAPTING;
+                      }
+                      break;
+                  }
+
+                  // Apply blend based on current state
+                  if (idle_readapt_state_ == IdleReadaptState::ADAPTING) {
+                    for (int idx : lower_body_joint_isaaclab_order_in_isaaclab_index) {
+                      double actual = motor_state[mujoco_to_isaaclab[idx]].q();
+                      planner_motion_->JointPositions(new_frame)[idx] =
+                          0.98 * planner_motion_->JointPositions(new_frame)[idx] + 0.02 * actual;
+                    }
+                  } else if (idle_readapt_state_ == IdleReadaptState::RECOVERING) {
+                    for (int idx : lower_body_joint_isaaclab_order_in_isaaclab_index) {
+                      planner_motion_->JointPositions(new_frame)[idx] =
+                          0.98 * planner_motion_->JointPositions(new_frame)[idx] + 0.02 * idle_readapt_original_targets_[idx];
+                    }
+                  }
+                  // IDLE state: do nothing
+                }
+              }
             }
           current_frame_ = new_frame;
         }
@@ -3017,7 +3379,13 @@ class G1Deploy {
         if (current_motion_->name != "streamed") {
           if (current_frame_ >= current_motion_->timesteps) {
             operator_state.play = false;
-            std::cout << "Motion " << current_motion_->name << " completed." << std::endl;
+            if (current_motion_ ->name != "temporary_motion") {
+              std::cout << "______________________________________________________" << std::endl;
+              std::cout << "Motion index: " << motion_reader_.current_motion_index_ << " : " << current_motion_->name << " completed." << std::endl;
+              std::cout << "______________________________________________________" << std::endl;
+            } else {
+              std::cout << "Temporary motion completed." << std::endl;
+            }
             current_frame_ = 0; // Reset to beginning
             // Total reset: both base quaternion and delta heading
             reinitialize_heading_ = true;
@@ -3086,12 +3454,12 @@ class G1Deploy {
       bool has_planner = static_cast<bool>(planner_);
       
       if (has_planner) {
-        input_interface_->handle_input(motion_reader_, current_motion_, current_frame_, operator_state, 
-                                      reinitialize_heading_, heading_state_buffer_, has_planner, planner_->planner_state_, movement_state_buffer_, current_motion_mutex_);
+        input_interface_->handle_input(motion_reader_, current_motion_, current_frame_, operator_state,
+                                      reinitialize_heading_, heading_state_buffer_, has_planner, planner_->planner_state_, movement_state_buffer_, current_motion_mutex_, report_temperature_);
       } else {
         PlannerState planner_state{false, false};
-        input_interface_->handle_input(motion_reader_, current_motion_, current_frame_, operator_state, 
-                                      reinitialize_heading_, heading_state_buffer_, has_planner, planner_state, movement_state_buffer_, current_motion_mutex_);
+        input_interface_->handle_input(motion_reader_, current_motion_, current_frame_, operator_state,
+                                      reinitialize_heading_, heading_state_buffer_, has_planner, planner_state, movement_state_buffer_, current_motion_mutex_, report_temperature_);
       }
 
       if (playback_input_file_ && program_state_ == ProgramState::CONTROL) {
@@ -3438,15 +3806,43 @@ class G1Deploy {
             std::cout << "LowState is not available, waiting for robot to be ready" << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
           }
+          // Re-publish robot_config so late-joining subscribers can receive it
+          // before the policy is activated (ZMQ PUB has no persistence).
+          for (auto& oi : output_interfaces_) { if (oi) oi->publish_config(); }
           break;
 
         case ProgramState::WAIT_FOR_CONTROL:
+          if (!CheckSafety()) {
+            std::cout << "[ERROR] Safety check failed, cannot start control." << std::endl;
+            operator_state.stop = true;
+            break;
+          }
+
+          // Re-publish robot_config so late-joining subscribers can receive it
+          // before the policy is activated (ZMQ PUB has no persistence).
+          for (auto& oi : output_interfaces_) { if (oi) oi->publish_config(); }
           if (operator_state.start) {
+            // Warn if starting control in token mode without tokens, but allow it
+            if (initial_encoder_mode_ == -1 && !first_token_received_) {
+              static int warn_count = 0;
+              if (warn_count % 50 == 0) {  // Warn every ~1 second
+                std::cout << "⚠⚠⚠ [Token Safety] WARNING: Starting control before tokens arrive! "
+                          << "Robot will use zero tokens until tokens start streaming." << std::endl;
+              }
+              warn_count++;
+            }
+            std::cout << "[Control] DEBUG: operator_state.start=true, transitioning to CONTROL state" << std::endl;
             program_state_ = ProgramState::CONTROL;
           }
           break;
 
         case ProgramState::CONTROL: {
+          if (!CheckSafety()) {
+            std::cout << "[ERROR] Safety check failed, stopping control." << std::endl;
+            operator_state.stop = true;
+            break;
+          }
+
           // NEW: Get data with timestamps for loop timing analysis
           auto obs_start_time = std::chrono::steady_clock::now();
           // Increment independent logging counter every control iteration
@@ -3457,6 +3853,47 @@ class G1Deploy {
             operator_state.stop = true;
             std::cout << "Stopping control system." << std::endl;
             return;
+          }
+
+          // Handle temperature report request (F key)
+          if (report_temperature_) {
+            report_temperature_ = false;
+            const auto ls = used_low_state_data_.data;
+            if (ls) {
+              static const char* joint_names[] = {
+                "Left Hip Pitch", "Left Hip Roll", "Left Hip Yaw", "Left Knee",
+                "Left Ankle Pitch", "Left Ankle Roll", "Right Hip Pitch", "Right Hip Roll",
+                "Right Hip Yaw", "Right Knee", "Right Ankle Pitch", "Right Ankle Roll",
+                "Waist Yaw", "Waist Roll", "Waist Pitch",
+                "Left Shoulder Pitch", "Left Shoulder Roll", "Left Shoulder Yaw", "Left Elbow",
+                "Left Wrist Roll", "Left Wrist Pitch", "Left Wrist Yaw",
+                "Right Shoulder Pitch", "Right Shoulder Roll", "Right Shoulder Yaw", "Right Elbow",
+                "Right Wrist Roll", "Right Wrist Pitch", "Right Wrist Yaw",
+              };
+
+              // Print full report to console with joint names
+              std::cout << "\n[Temperature Report] Motor temperatures (winding / driver):" << std::endl;
+              std::array<std::pair<int16_t, int>, G1_NUM_MOTOR> max_temps;
+              for (int i = 0; i < G1_NUM_MOTOR; ++i) {
+                auto temp = ls->motor_state()[i].temperature();
+                std::cout << "  " << std::setw(2) << i << " " << std::setw(22) << std::left
+                          << joint_names[i] << std::right << ": "
+                          << std::setw(4) << temp[0] << " / " << std::setw(4) << temp[1] << std::endl;
+                max_temps[i] = {std::max(temp[0], temp[1]), i};
+              }
+              std::cout << std::endl;
+
+              // TTS: top 3 hottest motors
+              std::sort(max_temps.begin(), max_temps.end(),
+                        [](const auto& a, const auto& b) { return a.first > b.first; });
+              std::string tts = "Hottest motors: ";
+              for (int k = 0; k < 3 && k < G1_NUM_MOTOR; ++k) {
+                auto [temp_val, idx] = max_temps[k];
+                if (k > 0) tts += ", ";
+                tts += std::string(joint_names[idx]) + " " + std::to_string(temp_val);
+              }
+              pending_tts_ = tts;
+            }
           }
 
           if (!GatherInputInterfaceData()) {
@@ -3479,7 +3916,11 @@ class G1Deploy {
 
             // reset saved frame for observation window before gathering observations so that we can get the latest value
             saved_frame_for_observation_window_ = 0;
-            
+
+            // Update heading state (handles reinitialize_heading_ and frame-0 init)
+            // Must run before any orientation observation functions
+            UpdateHeadingState();
+
             // Gather all observations using modular functions
             // This may update token_state_data_ with encoder output (if encoder is used)
             if (!GatherObservations()) {
@@ -4027,3 +4468,4 @@ int main(int argc, char const* argv[]) {
   std::cout << "[DEBUG] Program exiting normally..." << std::endl;
   return 0;
 }
+

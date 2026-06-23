@@ -1,8 +1,7 @@
-"""SMPL/SMPLX body model utilities: downloading, creation, and pose decomposition."""
+"""SMPL/SMPLX body model utilities: creation and pose decomposition."""
 
 import os
 import pickle
-import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -11,8 +10,8 @@ import torch
 import torch.nn.functional as F
 from smplx import SMPL, SMPLX, SMPLXLayer
 
-from groot.rl.trl.utils.smplx.body_model import BodyModelSMPLH, BodyModelSMPLX
-from groot.rl.trl.utils.smplx.body_model.smplx_lite import (
+from gear_sonic.trl.utils.smplx.body_model import BodyModelSMPLH, BodyModelSMPLX
+from gear_sonic.trl.utils.smplx.body_model.smplx_lite import (
     SmplxLiteCoco17,
     SmplxLiteSmplN24,
     SmplxLiteV437Coco17,
@@ -26,26 +25,26 @@ SMPLH_PARENTS = torch.tensor([-1,  0,  0,  0,  1,  2,  3,  4,  5,  6,  7,  8,  9
 
 
 def _ensure_body_models_downloaded(model_path: str) -> Path:
-    """
-    Ensure body_models directory exists, downloading from gear data if needed.
+    """Ensure body_models directory exists.
 
     Args:
         model_path: Path to body_models directory (e.g., "data/body_models")
 
     Returns:
         Path object to the body_models directory
+
+    Raises:
+        FileNotFoundError: If body models are not found at the given path.
+            Download SMPL/SMPLX body models from https://smpl-x.is.tue.mpg.de/
+            and place them under ``data/body_models/``.
     """
     model_path_obj = Path(model_path)
 
-    # Check if path exists and has required subdirectories (smplx is the main one we need)
     if model_path_obj.exists():
         smplx_subdir = model_path_obj / "smplx"
         if smplx_subdir.exists() and any(smplx_subdir.iterdir()):
             return model_path_obj
 
-    # Try relative to project root (gr00t/), not groot/
-    # File is at: groot/rl/trl/utils/smplx/smplx_utils.py
-    # Need to go up 6 levels to get to project root
     project_root = Path(__file__).parent.parent.parent.parent.parent.parent
     full_path = project_root / model_path
     if full_path.exists():
@@ -53,56 +52,15 @@ def _ensure_body_models_downloaded(model_path: str) -> Path:
         if smplx_subdir.exists() and any(smplx_subdir.iterdir()):
             return full_path
 
-    # Need to download - create directory
-    full_path.mkdir(parents=True, exist_ok=True)
-
-    print(f"Body models not found at {model_path}. Downloading from gear data storage...")
-    try:
-        # Use exact command format that works manually: gear data download wbc_data/body_models/** data/body_models/
-        result = subprocess.run(
-            [
-                "gear",
-                "data",
-                "download",
-                "wbc_data/body_models/**",
-                str(full_path) + "/",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-
-        # Print output for debugging
-        if result.stdout:
-            print(result.stdout)
-        if result.stderr:
-            print(result.stderr)
-
-        # Verify download succeeded by checking if directory has contents
-        if not any(full_path.iterdir()):
-            raise RuntimeError(
-                f"Download completed but directory is empty. "
-                f"Check if 'wbc_data/body_models' exists in gear data storage.\n"
-                f"Output: {result.stdout}\n"
-                f"Error: {result.stderr}"
-            )
-
-        print(f"Successfully downloaded body models to {full_path}")
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr if e.stderr else (e.stdout if e.stdout else "Unknown error")
-        raise RuntimeError(
-            f"Failed to download body models from wbc_data/body_models.\n"
-            f"Error: {error_msg}\n"
-            f"Please ensure 'gear' CLI is installed and configured, or manually download:\n"
-            f"  gear data download wbc_data/body_models/** {full_path}/"
-        )
-    except FileNotFoundError:
-        raise RuntimeError(
-            f"'gear' command not found. Please install gear CLI or manually download body models:\n"
-            f"  gear data download wbc_data/body_models/** {full_path}/"
-        )
-
-    return full_path
+    raise FileNotFoundError(
+        f"Body models not found at '{model_path}' or '{full_path}'.\n"
+        f"Download SMPL/SMPLX body models from https://smpl-x.is.tue.mpg.de/ "
+        f"and place them under data/body_models/ in the repository root.\n"
+        f"Expected structure:\n"
+        f"  data/body_models/smplx/SMPLX_NEUTRAL.npz\n"
+        f"  data/body_models/smplx/SMPLX_MALE.npz\n"
+        f"  data/body_models/smplx/SMPLX_FEMALE.npz"
+    )
 
 
 def make_smplx(type="neu_fullpose", **kwargs):

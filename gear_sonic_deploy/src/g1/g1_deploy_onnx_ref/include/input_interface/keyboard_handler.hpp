@@ -106,6 +106,7 @@ class SimpleKeyboard : public InputInterface {
     bool planner_emergency_stop = false;     ///< Immediate halt flag (R / ` key).
 
     bool encoder_mode_toggle = false;  ///< Toggle encoder-mode (Z key) this frame.
+    bool report_temperature = false;   ///< Print motor temperatures (F key) this frame.
 
     // Persistent planner state
     double planner_facing_angle = 0.0;   ///< Accumulated facing direction (radians).
@@ -169,6 +170,7 @@ class SimpleKeyboard : public InputInterface {
       planner_heading_right = false;
       planner_emergency_stop = false;
       encoder_mode_toggle = false;
+      report_temperature = false;
 
       // Read keyboard input (using shared buffered reading)
       char ch;
@@ -251,6 +253,8 @@ class SimpleKeyboard : public InputInterface {
                 case 'T': play_motion = true; break; // Play motion to end
                 case 'z':
                 case 'Z': encoder_mode_toggle = true; break; // Toggle encoder mode
+                case 'f':
+                case 'F': report_temperature = true; break; // Report motor temperatures
             }
 
             // Limit movement speed and height to the range of the movement mode
@@ -311,6 +315,8 @@ class SimpleKeyboard : public InputInterface {
             case '\n': use_planner = !use_planner; break; // Use planner
             case 'z':
             case 'Z': encoder_mode_toggle = true; break; // Toggle encoder mode
+            case 'h':
+            case 'H': report_temperature = true; break; // Report motor temperatures
           }
         }
         
@@ -319,16 +325,17 @@ class SimpleKeyboard : public InputInterface {
 
     // Override the handle_input function from InputInterface
     // This processes the keyboard input flags and performs actions using the provided parameters
-    void handle_input(MotionDataReader& motion_reader, 
-                     std::shared_ptr<const MotionSequence>& current_motion, 
-                     int& current_frame, 
-                     OperatorState& operator_state, 
-                     bool& reinitialize_heading, 
+    void handle_input(MotionDataReader& motion_reader,
+                     std::shared_ptr<const MotionSequence>& current_motion,
+                     int& current_frame,
+                     OperatorState& operator_state,
+                     bool& reinitialize_heading,
                      DataBuffer<HeadingState>& heading_state_buffer,
-                     bool has_planner, 
-                     PlannerState& planner_state, 
+                     bool has_planner,
+                     PlannerState& planner_state,
                      DataBuffer<MovementState>& movement_state_buffer,
-                     std::mutex& current_motion_mutex) override {
+                     std::mutex& current_motion_mutex,
+                     bool& report_temperature) override {
       
 
       
@@ -424,6 +431,8 @@ class SimpleKeyboard : public InputInterface {
       }
 
       if (this->stop_control) { operator_state.stop = true; }
+
+      if (this->report_temperature) { report_temperature = true; }
 
       if (this->start_control) { operator_state.start = true; }
 

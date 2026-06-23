@@ -52,6 +52,7 @@ def main(config: ArgsConfig):
         config=wbc_config,
         onscreen=wbc_config.get("ENABLE_ONSCREEN", True),
         offscreen=wbc_config.get("ENABLE_OFFSCREEN", False),
+        enable_image_publish=config.enable_image_publish,
     )
     # Start simulator as independent process
     SimulatorFactory.start_simulator(

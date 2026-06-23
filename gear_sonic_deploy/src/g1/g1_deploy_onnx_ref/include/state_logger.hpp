@@ -28,6 +28,7 @@
  *   q.csv               | Joint positions (hardware order, with default offsets)
  *   dq.csv              | Joint velocities (hardware order)
  *   action.csv          | Policy actions (hardware order, scaled + offset)
+ *   motor_temperature.csv | Motor temperatures (2 per motor: winding, driver)
  *   left_hand_q/dq.csv  | Left Dex3 hand positions / velocities
  *   right_hand_q/dq.csv | Right Dex3 hand positions / velocities
  *   left/right_hand_action.csv | Hand actions
@@ -93,6 +94,15 @@ class StateLogger {
     std::vector<double> body_dq;      // size = num_joints
     std::vector<double> last_action;  // size = num_actions
 
+    // Motor temperature (2 values per motor: winding temp, driver temp)
+    std::vector<double> motor_temperature;  // size = num_joints * 2
+
+    // Motor error codes (one per motor, 0 = no fault)
+    std::vector<double> motor_error;  // size = num_joints
+
+    // Motor estimated torque (one per motor, Nm)
+    std::vector<double> motor_torque;  // size = num_joints
+
     // Dex3 hands (7 motors each)
     std::vector<double> left_hand_q;       // size = 7 (q positions)
     std::vector<double> left_hand_dq;      // size = 7 (dq velocities)
@@ -151,6 +161,9 @@ class StateLogger {
                         const std::span<double>& body_q,
                         const std::span<double>& body_dq,
                         const std::span<double>& last_action,
+                        const std::span<double>& motor_temperature,
+                        const std::span<double>& motor_error,
+                        const std::span<double>& motor_torque,
                         const std::span<double>& left_hand_q,
                         const std::span<double>& left_hand_dq,
                         const std::span<double>& right_hand_q,
@@ -224,6 +237,9 @@ class StateLogger {
   FileSink sink_q_;
   FileSink sink_dq_;
   FileSink sink_action_;
+  FileSink sink_motor_temperature_;
+  FileSink sink_motor_error_;
+  FileSink sink_motor_torque_;
   FileSink sink_left_hand_q_;
   FileSink sink_left_hand_dq_;
   FileSink sink_right_hand_q_;

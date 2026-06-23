@@ -22,23 +22,24 @@ source .venv_sim/bin/activate
 python gear_sonic/scripts/run_sim_loop.py
 
 # Terminal 2 — C++ deployment (from gear_sonic_deploy/)
-bash deploy.sh sim --input-type manager
+bash deploy.sh --input-type manager sim
 ```
 
 **Real Robot:**
 
 ```bash
 # From gear_sonic_deploy/
-bash deploy.sh real --input-type manager
+bash deploy.sh --input-type manager real
 ```
 
 If you plan to use the ZMQ interface, add ZMQ flags:
 
 ```bash
-bash deploy.sh sim --input-type manager \
+bash deploy.sh --input-type manager \
   --zmq-host <publisher-ip> \
   --zmq-port 5556 \
-  --zmq-topic pose
+  --zmq-topic pose \
+  sim
 ```
 
 ## Step-by-Step
@@ -87,6 +88,7 @@ These controls work at the manager level, **regardless of which interface is act
 | Key | Action |
 |-----|--------|
 | **O** / **o** | Immediate emergency stop — works even when gamepad or ZMQ is the active interface |
+| **F** / **f** | Report motor temperatures (TTS voice alert) |
 
 ### Compliance Controls
 

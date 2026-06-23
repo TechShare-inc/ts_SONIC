@@ -153,9 +153,15 @@ Heading-corrected relative rotation from the robot's current base orientation to
 
 | Name | Dim | Frames | Step | Description |
 |---|---|---|---|---|
-| `motion_anchor_orientation` | 6 | 1 | — | Current frame anchor orientation |
+| `motion_anchor_orientation` | 6 | 1 | — | Current frame anchor orientation (full base quaternion) |
 | `motion_anchor_orientation_10frame_step1` | 60 | 10 | 1 | 10-frame window, consecutive |
 | `motion_anchor_orientation_10frame_step5` | 60 | 10 | 5 | 10-frame window, 0.1 s apart |
+| `motion_anchor_orientation_heading` | 6 | 1 | — | Current frame, heading-only quaternion (yaw extracted from robot base) |
+| `motion_anchor_orientation_heading_10frame_step1` | 60 | 10 | 1 | Heading-only, 10-frame window, consecutive |
+| `motion_anchor_orientation_heading_10frame_step5` | 60 | 10 | 5 | Heading-only, 10-frame window, 0.1 s apart |
+| `motion_anchor_orientation_refheading` | 6 | 1 | — | Current frame, reference-heading quaternion (yaw from first future ref frame) |
+| `motion_anchor_orientation_refheading_10frame_step1` | 60 | 10 | 1 | Ref-heading, 10-frame window, consecutive |
+| `motion_anchor_orientation_refheading_10frame_step5` | 60 | 10 | 5 | Ref-heading, 10-frame window, 0.1 s apart |
 
 ### Root Z Position (from motion)
 

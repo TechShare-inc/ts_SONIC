@@ -138,6 +138,11 @@ def receive_realtime_debug_messages(socket, data_csv_dicts, topic):
         data_csv_dicts[0]["vr_3point_orientation"] = np.array(result["vr_3point_orientation"]).reshape(3,4)
         data_csv_dicts[0]["vr_3point_compliance"] = np.array(result["vr_3point_compliance"]).reshape(3)
 
+        if "motor_temperature" in result:
+            temps = np.array(result["motor_temperature"])
+            # 58 values: 29 motors × 2 (winding, driver). Take max per motor.
+            data_csv_dicts[0]["motor_temperature"] = np.maximum(temps[0::2], temps[1::2])  # shape (29,)
+
 def main(args) -> None:
     global \
         curr_start, \
@@ -202,7 +207,15 @@ def main(args) -> None:
     replace_attribute(robot3_body, "rgba", "0.1 0.5 0.1 0.2")
     robot3_body.set("pos", "0 -2 -10")
     scene_worldbody.append(robot3_body)
-    
+
+    # Robot 4: temperature visualization robot (white transparent, offset 3m to the right)
+    robot4 = etree.parse('g1/g1_29dof_old.xml')
+    robot4_body = robot4.find('worldbody').find('body')
+    prepend_names(robot4_body, "robot4_")
+    replace_attribute(robot4_body, "rgba", "0.8 0.8 0.8 0.1")
+    robot4_body.set("pos", "0 -3 -10")
+    scene_worldbody.append(robot4_body)
+
     mj_model = mujoco.MjModel.from_xml_string(etree.tostring(main_scene, pretty_print=True, encoding="unicode"))
     mj_data = mujoco.MjData(mj_model)
 
@@ -234,6 +247,7 @@ def main(args) -> None:
             "vr_3point_position": np.zeros((3,3), dtype=np.float64),
             "vr_3point_orientation": np.zeros((3,4), dtype=np.float64),
             "vr_3point_compliance": np.zeros((3), dtype=np.float64),
+            "motor_temperature": np.zeros(29, dtype=np.float64),
         }]
 
         threading.Thread(target=receive_realtime_debug_messages, args=(socket, data_csv_dicts, args.realtime_debug_topic)).start()
@@ -286,6 +300,14 @@ def main(args) -> None:
                 mj_data.qpos[43+29+3:43+29+3+4] = data_dict["root_rot"][time_idx]
                 mj_data.qpos[43+29+3+4:43+29+3+4+29] = data_dict["dof"][time_idx]
 
+                # Robot 4: temperature visualization (copy measured state, offset 3m on y)
+                r4_base = 36 * 3  # 108
+                r4_pos = data_dict["root_trans_offset_measured"][time_idx].copy()
+                r4_pos[1] -= 1.0  # offset 1m to the right
+                mj_data.qpos[r4_base:r4_base+3] = r4_pos
+                mj_data.qpos[r4_base+3:r4_base+7] = data_dict["root_rot_measured"][time_idx]
+                mj_data.qpos[r4_base+7:r4_base+36] = data_dict["dof_measured"][time_idx]
+
             mujoco.mj_forward(mj_model, mj_data)
             if not paused:
                 frame_idx += 1
@@ -322,6 +344,53 @@ def main(args) -> None:
                         rgba=0.5*np.array([1, 1, 0, 2])
                     )
                     viewer.user_scn.ngeom += 1
+
+            # Draw temperature indicators at each joint of the measured robot (robot2_)
+            if "motor_temperature" in data_dict:
+                # Body names for each motor joint (MuJoCo order, 29 joints)
+                motor_body_names = [
+                    "left_hip_pitch_link", "left_hip_roll_link", "left_hip_yaw_link",
+                    "left_knee_link", "left_ankle_pitch_link", "left_ankle_roll_link",
+                    "right_hip_pitch_link", "right_hip_roll_link", "right_hip_yaw_link",
+                    "right_knee_link", "right_ankle_pitch_link", "right_ankle_roll_link",
+                    "waist_yaw_link", "waist_roll_link", "torso_link",
+                    "left_shoulder_pitch_link", "left_shoulder_roll_link", "left_shoulder_yaw_link",
+                    "left_elbow_link", "left_wrist_roll_link", "left_wrist_pitch_link",
+                    "left_wrist_yaw_link", "right_shoulder_pitch_link", "right_shoulder_roll_link",
+                    "right_shoulder_yaw_link", "right_elbow_link", "right_wrist_roll_link",
+                    "right_wrist_pitch_link", "right_wrist_yaw_link",
+                ]
+                temps = data_dict["motor_temperature"]
+                flash = (int(time.time() * 4) % 2 == 0)  # 4 Hz flash toggle
+                for j in range(min(29, len(temps))):
+                    t = temps[j]
+                    body_name = "robot4_" + motor_body_names[j]
+                    body_id = mj_model.body(body_name).id
+                    pos = mj_data.xpos[body_id].copy()
+
+                    # Color: green (< 50) -> yellow (50-70) -> orange (70-90) -> red (>= 90, flashing)
+                    if t >= 90:
+                        rgba = np.array([1.0, 0.0, 0.0, 1.0 if flash else 0.3])
+                    elif t >= 70:
+                        frac = (t - 70) / 20.0
+                        rgba = np.array([1.0, 0.5 * (1 - frac), 0.0, 0.9])
+                    elif t >= 50:
+                        frac = (t - 50) / 20.0
+                        rgba = np.array([frac, 1.0, 0.0, 0.8])
+                    else:
+                        rgba = np.array([0.0, 0.8, 0.0, 0.8])
+
+                    geom_idx = viewer.user_scn.ngeom
+                    if geom_idx < viewer.user_scn.maxgeom:
+                        mujoco.mjv_initGeom(
+                            viewer.user_scn.geoms[geom_idx],
+                            type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                            size=[0.04, 0, 0],
+                            pos=pos,
+                            mat=np.eye(3).flatten(),
+                            rgba=rgba,
+                        )
+                        viewer.user_scn.ngeom += 1
 
             # Pick up changes to the physics state, apply perturbations, update options from GUI.
             viewer.sync()

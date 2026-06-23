@@ -20,6 +20,18 @@ This codebase serves as the foundation for:
 - **Decoupled WBC** models used in NVIDIA Isaac-Gr00t, Gr00t N1.5 and N1.6 (see :doc:`detailed reference <references/decoupled_wbc>`)
 - **GEAR-SONIC Series**: State-of-the-art controllers from the GEAR team
 
+News
+----
+
+- **[2026-06-16]** **Low-latency SONIC release** — added a low-latency G1 controller variant on `Hugging Face <https://huggingface.co/nvidia/GEAR-SONIC/tree/main/low_latency>`_ under ``low_latency/``. See `Download Models <getting_started/download_models.html#low-latency-sonic-variant>`_ and `VLA Inference <tutorials/vla_inference.html#low-latency-sonic-wbc>`_ for usage.
+- **[2026-05-07]** **End-to-end VLA workflow on G1** — collect teleop data, fine-tune Isaac-GR00T N1.7, and deploy with SONIC whole-body control. See `Data Collection <tutorials/data_collection.html>`_, `VLA Workflow <tutorials/vla_workflow.html>`_, and `VLA Inference <tutorials/vla_inference.html>`_.
+- **[2026-04-14]** `Live web demo <https://nvlabs.github.io/GEAR-SONIC/demo.html>`_ — try SONIC interactively in your browser. Features `Kimodo <https://github.com/nv-tlabs/kimodo>`_ text-to-motion generation.
+- **[2026-04-10]** Released **SONIC training code and checkpoint** on `HuggingFace <https://huggingface.co/nvidia/GEAR-SONIC>`_. Train from scratch or finetune. **Additional embodiment support** and **VLA data collection pipeline**. See `Training Guide <user_guide/training.html>`_.
+- **[2026-03-24]** C++ inference stack update: motor error monitoring, TTS alerts, ZMQ protocol v4, idle-mode readaptation. **ZMQ header size changed to 1280 bytes.**
+- **[2026-03-16]** `BONES-SEED <https://huggingface.co/datasets/bones-studio/seed>`_ open-sourced — 142K+ human motions (~288 hours) with G1 MuJoCo trajectories.
+- **[2026-02-19]** Released GEAR-SONIC: pretrained checkpoints, C++ inference, VR teleoperation, and documentation.
+- **[2025-11-12]** Initial release with Decoupled WBC for GR00T N1.5 and N1.6.
+
 GEAR-SONIC
 ----------
 .. image:: _static/sonic-preview-gif-480P.gif
@@ -70,7 +82,6 @@ Documentation
    getting_started/download_models
    getting_started/quickstart
    getting_started/vr_teleop_setup
-..    getting_started/installation_training
 
 .. toctree::
    :maxdepth: 2
@@ -80,17 +91,27 @@ Documentation
    tutorials/gamepad
    tutorials/zmq
    tutorials/manager
+   tutorials/isaac_teleop_publisher_setup
    tutorials/vr_wholebody_teleop
+   tutorials/data_collection
+   tutorials/vla_workflow
+   tutorials/vla_inference
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Training
+
+   getting_started/installation_training
+   user_guide/training
+   user_guide/training_data
+   user_guide/new_embodiments
 
 .. toctree::
    :maxdepth: 2
    :caption: Best Practices
 
    user_guide/teleoperation
-
-..    user_guide/configuration
-..    user_guide/training
-..    user_guide/troubleshooting
+   user_guide/troubleshooting
 
 .. toctree::
    :maxdepth: 2
@@ -104,6 +125,9 @@ Documentation
    :caption: Reference Documentation
 
    references/index
+   user_guide/configuration
+   references/conventions
+   references/training_code
    references/deployment_code
    references/observation_config
    references/motion_reference

@@ -61,6 +61,7 @@ int main(int argc, char** argv) {
         PlannerState planner_state;
         DataBuffer<MovementState> movement_buffer;
         std::mutex current_motion_mutex; // Mutex for thread-safe motion access
+        bool report_temperature = false;
         
         std::cout << "⏳ Testing ROS2InputHandler with real classes (max 30 seconds)..." << std::endl;
         std::cout << "📝 This test expects msgpack-serialized messages on topic:" << std::endl;
@@ -78,7 +79,7 @@ int main(int argc, char** argv) {
             // Note: encoder_mode no longer passed as parameter (initialized in constructor)
             input_handler->handle_input(motion_reader, current_motion, current_frame,
                                       operator_state, reinitialize_heading, heading_buffer, has_planner, 
-                                      planner_state, movement_buffer, current_motion_mutex);
+                                      planner_state, movement_buffer, current_motion_mutex, report_temperature);
             
             // Print status every 100 loops (~10 seconds)
             if (loop_count % 100 == 0) {

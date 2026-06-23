@@ -34,14 +34,14 @@ source .venv_sim/bin/activate
 python gear_sonic/scripts/run_sim_loop.py
 
 # Terminal 2 — C++ deployment (from gear_sonic_deploy/)
-bash deploy.sh sim --input-type keyboard
+bash deploy.sh --input-type keyboard sim
 ```
 
 **Real Robot:**
 
 ```bash
 # From gear_sonic_deploy/
-bash deploy.sh real --input-type keyboard
+bash deploy.sh --input-type keyboard real
 ```
 
 ## Step-by-Step: Normal Mode (Reference Motion Tracking)
@@ -86,6 +86,7 @@ Planner Mode lets you control the robot in real time — choose a locomotion sty
 | **ENTER** | Toggle between Normal / Planner modes |
 | **I** | Reinitialize base quaternion and reset heading |
 | **Z** | Toggle encoder mode (between mode 0 and mode 1, if encoder loaded) |
+| **F** | Report motor temperatures (TTS voice alert) |
 
 ### Normal Mode Keys
 

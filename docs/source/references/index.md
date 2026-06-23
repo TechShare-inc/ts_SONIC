@@ -2,6 +2,7 @@
 
 These pages contain the original standalone documentation that previously lived as individual `README_*.md` files. They are preserved here as detailed references.
 
+- [Training Code Structure](training_code.md) — training codebase architecture, pipeline flow, configuration system, and key classes
 - [Deployment Code & Program Flow](deployment_code.md) — CLI arguments, logging, observation config, and visualization tools
 - [Observation Configuration](observation_config.md) — YAML config format, all observation types with dimensions, and how to create custom observations
 - [Motion Reference Data](motion_reference.md) — reference motion file format, conversion, verification, and usage

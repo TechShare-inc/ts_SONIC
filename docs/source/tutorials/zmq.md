@@ -22,20 +22,22 @@ source .venv_sim/bin/activate
 python gear_sonic/scripts/run_sim_loop.py
 
 # Terminal 2 — C++ deployment (from gear_sonic_deploy/)
-bash deploy.sh sim --input-type zmq \
+bash deploy.sh --input-type zmq \
   --zmq-host <publisher-ip> \
   --zmq-port 5556 \
-  --zmq-topic pose
+  --zmq-topic pose \
+  sim
 ```
 
 **Real Robot:**
 
 ```bash
 # From gear_sonic_deploy/
-bash deploy.sh real --input-type zmq \
+bash deploy.sh --input-type zmq \
   --zmq-host <publisher-ip> \
   --zmq-port 5556 \
-  --zmq-topic pose
+  --zmq-topic pose \
+  real
 ```
 
 ## Step-by-Step
@@ -80,10 +82,11 @@ python gear_sonic/scripts/run_sim_loop.py
 **Terminal 2 — C++ deployment** (from `gear_sonic_deploy/`):
 
 ```bash
-bash deploy.sh sim --input-type zmq \
+bash deploy.sh --input-type zmq \
   --zmq-host localhost \
   --zmq-port 5556 \
-  --zmq-topic pose
+  --zmq-topic pose \
+  sim
 ```
 
 **Terminal 3 — PICO teleop streamer** (from repo root):
@@ -106,10 +109,11 @@ Run two terminals (no MuJoCo):
 **Terminal 1 — C++ deployment** (from `gear_sonic_deploy/`):
 
 ```bash
-bash deploy.sh real --input-type zmq \
+bash deploy.sh --input-type zmq \
   --zmq-host <teleop-machine-ip> \
   --zmq-port 5556 \
-  --zmq-topic pose
+  --zmq-topic pose \
+  real
 ```
 
 Replace `<teleop-machine-ip>` with `localhost` if the PICO streamer runs on the same machine, or the IP of the machine running Terminal 2.
@@ -160,6 +164,7 @@ All mode control on the deployment side is done from the keyboard:
 | **`O`** | Emergency stop — stop control and exit |
 | **`I`** | Reinitialize base quaternion and reset heading |
 | **`Q`** / **`E`** | Adjust heading (±0.1 rad) |
+| **`F`** | Report motor temperatures (TTS voice alert) |
 
 ```{note}
 For the full PICO VR experience with planner support, locomotion modes, and PICO-controller-based mode switching, use `--input-type zmq_manager` instead. See the [VR Whole-Body Teleop tutorial](vr_wholebody_teleop.md).
@@ -174,6 +179,7 @@ For the full PICO VR experience with planner support, locomotion modes, and PICO
 | **ENTER** | Toggle between reference motions and ZMQ streaming |
 | **I** | Reinitialize base quaternion and reset heading |
 | **Q** / **E** | Adjust delta heading left / right (±0.1 rad) |
+| **F** | Report motor temperatures (TTS voice alert) |
 
 *Reference motion mode only (streaming off):*
 
@@ -185,7 +191,7 @@ For the full PICO VR experience with planner support, locomotion modes, and PICO
 
 ## Stream Protocol Versions
 
-The encode mode is determined automatically by the ZMQ stream protocol version. **SONIC uses Protocol v1 and v3.** Protocol v2 is available for custom applications.
+The encode mode is determined automatically by the ZMQ stream protocol version. **SONIC uses Protocol v1, v3, and v4.** Protocol v2 is available for custom applications.
 
 ### Encode Mode Logic
 
@@ -199,7 +205,7 @@ The encode mode only takes effect when the policy model has an **encoder** confi
 | `1` | Encoder loaded, teleop / 3 points upper-body mode |
 | `2` | Encoder loaded, SMPL-based mode |
 
-When ZMQ streaming is active, the protocol version sets the encode mode on the streamed motion: v1 → `0`, v2/v3 → `2`. This only affects inference if the model actually has an encoder (`encode_mode >= 0`). If no encoder is configured (`-2`), the value is set but has no effect on the inference pipeline.
+When ZMQ streaming is active, the protocol version sets the encode mode on the streamed motion: v1 → `0`, v2/v3 → `2`. Protocol v4 bypasses the encoder entirely — it streams pre-computed tokens directly into the policy. This only affects inference if the model actually has an encoder (`encode_mode >= 0`). If no encoder is configured (`-2`), the value is set but has no effect on the inference pipeline.
 
 When switching back to reference motions (pressing **ENTER** to disable streaming), the encode mode resets to `0` (if the motion has an encoder, i.e. `encode_mode >= 0`).
 
@@ -278,6 +284,40 @@ The SMPL fields (`smpl_joints`, `smpl_pose`) carry the primary motion data in v3
 - `Version 3 missing required field 'joint_pos'` or `'joint_vel'` — joint fields are absent (unlike v2, they are required in v3).
 - `Version 3 frame count mismatch between smpl_joints (X) and joint_pos (Y)` — the `N` dimension differs across fields.
 
+### Protocol v4 — Token-Only Streaming (Direct Latent Actions)
+
+Streams pre-computed motion tokens directly to the policy, bypassing the encoder entirely. Use this when your source produces encoded latent actions (e.g., from a separate encoder running on a different machine, or a generative model that outputs tokens directly).
+
+Unlike v1–v3, Protocol v4 does **not** carry motion frames — the reference motion on the robot side is left unchanged. The tokens are injected directly into the `token_state` observation slot of the decoder policy.
+
+**Required fields:**
+
+| Field | Shape | Dtype | Description |
+|-------|-------|-------|-------------|
+| `token_state` | `[D]` | `f32` / `f64` | Motion token array (dimension must match the encoder `dimension` in the observation config) |
+
+**Optional fields:**
+
+| Field | Shape | Dtype | Description |
+|-------|-------|-------|-------------|
+| `frame_index` | `[1]` | `i32` / `i64` | Frame index (for logging only, does not affect playback) |
+| `left_hand_joints` | `[7]` or `[1, 7]` | `f32` / `f64` | Left hand 7-DOF Dex3 joint positions |
+| `right_hand_joints` | `[7]` or `[1, 7]` | `f32` / `f64` | Right hand 7-DOF Dex3 joint positions |
+| `body_quat_w` | `[4]` or `[1, 4]` | `f32` / `f64` | Body quaternion (w,x,y,z) for heading updates |
+
+- The `token_state` dimension is validated against the encoder configuration. A mismatch is logged as a warning.
+- Hand joints, when provided, are applied to the robot directly (same as v1–v3 optional hand fields).
+- `body_quat_w` can be used to update the heading reference during token streaming.
+
+**Common errors:**
+- `Version 4 missing required field 'token_state'` — the `token_state` field is absent from the message.
+- `Protocol version 4 with motion data is impossible!` — v4 message produced a motion sequence (should never happen; indicates a decoder bug).
+- `Protocol version 4 with empty token data!` — `token_state` field was present but contained no data.
+
+```{warning}
+Protocol v4 requires the policy to have an encoder configuration with `token_state` in its observations. If the model has no encoder (`encode_mode == -2`), the tokens will be received but have no effect.
+```
+
 ### Protocol Summary
 
 | Protocol | Encode Mode | Used by SONIC | Required Fields |
@@ -285,6 +325,7 @@ The SMPL fields (`smpl_joints`, `smpl_pose`) carry the primary motion data in v3
 | v1 | `0` (joint-based) | ✅ Yes | `joint_pos`, `joint_vel` |
 | v2 | `2` (SMPL-based) | ❌ Custom only | `smpl_joints`, `smpl_pose` |
 | v3 | `2` (SMPL-based) | ✅ Yes | `joint_pos`, `joint_vel`, `smpl_joints`, `smpl_pose` |
+| v4 | N/A (bypasses encoder) | ✅ Yes | `token_state` |
 
 ## Optional Stream Fields
 

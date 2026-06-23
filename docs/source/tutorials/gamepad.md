@@ -20,7 +20,7 @@ Press **Select** at any time to immediately stop control and exit. Always keep a
 
 ```bash
 # From gear_sonic_deploy/
-bash deploy.sh real --input-type gamepad
+bash deploy.sh --input-type gamepad real
 ```
 
 ## Step-by-Step: Normal Mode (Reference Motion Tracking)

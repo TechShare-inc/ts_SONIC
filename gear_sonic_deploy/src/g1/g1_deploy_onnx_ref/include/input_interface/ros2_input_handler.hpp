@@ -282,6 +282,7 @@ public:
         // Reset input flags each frame
         start_control_ = false;
         stop_control_ = false;
+        report_temperature_flag_ = false;
 
         // Read keyboard input for emergency stop ('O'/'o' key)
         // This works in standalone mode; when managed by InterfaceManager, it's also handled there
@@ -293,7 +294,10 @@ public:
                     stop_control_ = true;
                     std::cout << "[ROS2] Emergency stop triggered (O/o key pressed)" << std::endl;
                     break;
-                // Ignore other keys - ROS2 is message-driven
+                case 'f':
+                case 'F':
+                    report_temperature_flag_ = true;
+                    break;
             }
         }
         
@@ -555,16 +559,17 @@ public:
 
     // Override the handle_input function from InputInterface
     // Uses local boolean flags (set by update()) to perform actions on system state
-    void handle_input(MotionDataReader& motion_reader, 
-                     std::shared_ptr<const MotionSequence>& current_motion, 
-                     int& current_frame, 
-                     OperatorState& operator_state, 
+    void handle_input(MotionDataReader& motion_reader,
+                     std::shared_ptr<const MotionSequence>& current_motion,
+                     int& current_frame,
+                     OperatorState& operator_state,
                      bool& reinitialize_heading,
-                     DataBuffer<HeadingState>& heading_state_buffer, 
-                     bool has_planner, 
-                     PlannerState& planner_state, 
+                     DataBuffer<HeadingState>& heading_state_buffer,
+                     bool has_planner,
+                     PlannerState& planner_state,
                      DataBuffer<MovementState>& movement_state_buffer,
-                     std::mutex& current_motion_mutex) override {
+                     std::mutex& current_motion_mutex,
+                     bool& report_temperature) override {
         
         // Handle emergency stop (triggered by ROS2 errors/timeout)
         if (emergency_stop_) {
@@ -659,6 +664,7 @@ public:
 
         // Handle control start/stop
         if (this->stop_control_) { operator_state.stop = true; }
+        if (this->report_temperature_flag_) { report_temperature = true; }
 
         // Handle control start
         if (this->start_control_) { 
@@ -879,6 +885,7 @@ private:
     // ------------------------------------------------------------------
     bool start_control_ = false;   ///< Start control this frame.
     bool stop_control_ = false;    ///< Stop control this frame.
+    bool report_temperature_flag_ = false;  ///< Report temperature this frame (F key).
 
     // ------------------------------------------------------------------
     // Teleop state (updated from control_goal_buffer_ in update())

@@ -168,7 +168,7 @@ The visualizer script can connect to a running `g1_deploy` executable to visuali
 python visualize_motion.py --realtime_debug_url tcp://localhost:5557
 ```
 
-This displays three G1 robots: target animation (colored), target with zero translation (green), and measured sensor data (red).
+This displays four G1 robots: target animation (colored), target with zero translation (green), measured sensor data (red), and motor temperature heatmap (white, with per-joint color indicators: green → yellow → orange → red/flashing by temperature).
 
 **Configuration:**
 - Default port: 5557 (change with `--zmq-out-port <port>`)

@@ -14,15 +14,15 @@
 
 | Platform | TensorRT Version |
 |---|---|
-| x86_64 (Desktop) | **10.13** |
-| Jetson / G1 onboard Orin | **10.7** (requires JetPack 6 — [flashing guide](../references/jetpack6.md)) |
+| x86_64 (Desktop) | **10.13** (required) |
+| Jetson / G1 onboard Orin | **10.7** (required; requires JetPack 6 — [flashing guide](../references/jetpack6.md)) |
 
 ```{tip}
 Download the **TAR** package (not the DEB one) so you can extract TensorRT to any location. The archive is ~10 GB; consider using `pv` to monitor progress:
 ```
 
-```{warning}
-The versions listed above are the tested versions. Different versions of TensorRT may cause inference issues. If you intend to use another version, test in simulation first.
+```{danger}
+You **must** use the exact TensorRT versions listed above. Using a different version is known to produce incorrect inference results — the planner will output wrong motion, which can cause dangerous robot behavior.
 ```
 
 ```sh
