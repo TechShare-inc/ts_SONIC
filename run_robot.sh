@@ -7,7 +7,8 @@ PROJECT_ROOT="~/techshare_ws/sonic/GR00T-WholeBodyControl/"
 ROBOT_IP="192.168.0.239"
 ROBOT_USER="unitree"
 ROBOT_PASS="123"
-VR_IP="192.168.0.200"
+VR_IP="192.168.0.231"
+#VR_IP="192.168.0.200"
 
 # 定义用于同步状态的临时文件
 READY_FILE_1="/tmp/robot_t1_ready.tmp"
@@ -66,6 +67,7 @@ gnome-terminal --title="Terminal-2-Video-Sender" -- bash -c "expect -c '
 
 # ==========================================
 # 3. 打开 terminal-3 自动处理密码、Y、Init Done
+# --cp policy/low_latency/model --obs-config policy/low_latency/observation_config.yaml
 # ==========================================
 echo "--> Opening Terminal-3..."
 
@@ -78,7 +80,7 @@ gnome-terminal --title="Terminal-3-Deploy-Real" -- bash -c "expect -c '
     }
     expect \"*@*\"
     send \"cd ${PROJECT_ROOT}\r\"
-    send \"cd gear_sonic_deploy && source scripts/setup_env.sh && bash deploy.sh real --input-type zmq_manager\r\"
+    send \"cd gear_sonic_deploy && source scripts/setup_env.sh && bash deploy.sh real --input-type zmq_manager --cp policy/low_latency/model --obs-config policy/low_latency/observation_config.yaml\r\"
 
     expect \"password for unitree\" { send \"${ROBOT_PASS}\r\" }
     expect \"Proceed with deployment*\" { send \"Y\r\" }
