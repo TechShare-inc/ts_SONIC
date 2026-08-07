@@ -7,11 +7,11 @@ static const std::string WARNING_STREAMING_DATA_ABSENT = "Streaming data absent"
 static const std::string WARNING_MOTOR_ERROR = "Motor error detected";
 static const std::string WARNING_LOW_STATE_LATE = "ROBOT DATA LATE";
 
-AudioThread::AudioThread():
+AudioThread::AudioThread(uint8_t volume):
   client_() {
   client_.Init();
   client_.SetTimeout(10.0f);
-  client_.SetVolume(100);
+  client_.SetVolume(volume);
   thread_ = std::jthread([this](std::stop_token st) { loop(st); });
 }
 

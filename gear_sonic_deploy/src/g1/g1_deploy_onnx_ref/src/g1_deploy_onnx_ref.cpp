@@ -2160,7 +2160,8 @@ class G1Deploy {
       std::string zmq_out_topic = "g1_debug",
       bool enable_motion_recording = false,
       std::array<double, 3> initial_compliance = {0.05, 0.05, 0.0},
-      double initial_max_close_ratio = 1.0)
+      double initial_max_close_ratio = 1.0,
+      int alert_volume = 100)
       : time_(0.0),
         publish_dt_(0.002),
         control_dt_(0.02),
@@ -2188,7 +2189,7 @@ class G1Deploy {
       // Initialize Dex3 hands (ChannelFactory already initialized above)
       dex3_hands_.initialize("");
 
-      audio_thread_ = std::make_unique<AudioThread>();
+      audio_thread_ = std::make_unique<AudioThread>(static_cast<uint8_t>(alert_volume));
 
       if(!target_motion_file_path.empty())
       {
@@ -4126,6 +4127,7 @@ int main(int argc, char const* argv[]) {
     std::cout << "|ros2";
 #endif
     std::cout << ">: input interface type (default: keyboard)" << std::endl;
+    std::cout << "  --alert-volume <0-100>: set SONIC TTS alert volume (default: 100)" << std::endl;
     std::cout << "  --output-type <zmq|all";
 #if HAS_ROS2
     std::cout << "|ros2";
@@ -4184,6 +4186,7 @@ int main(int argc, char const* argv[]) {
   std::string recordInputFile = "";
   std::string playbackInputFile = "";
   std::string inputType = "keyboard"; // Default to keyboard
+  int alertVolume = 100;
   std::string outputType = "zmq"; // Default to zmq
   bool plannerFp16 = false;
   bool policyFp16 = false;
@@ -4272,6 +4275,26 @@ int main(int argc, char const* argv[]) {
         std::cerr << ", or ros2";
 #endif
         std::cerr << ")" << std::endl;
+        exit(1);
+      }
+    } else if (std::string(argv[i]) == "--alert-volume") {
+      if (i + 1 < argc) {
+        try {
+          const std::string value = argv[i + 1];
+          size_t parsed = 0;
+          alertVolume = std::stoi(value, &parsed);
+          if (parsed != value.size() || alertVolume < 0 || alertVolume > 100) {
+            std::cerr << "Error: --alert-volume must be between 0 and 100" << std::endl;
+            exit(1);
+          }
+        } catch (...) {
+          std::cerr << "Error: --alert-volume must be an integer between 0 and 100" << std::endl;
+          exit(1);
+        }
+        std::cout << "[INFO] Using alert volume: " << alertVolume << std::endl;
+        i++;
+      } else {
+        std::cerr << "Error: --alert-volume requires a value argument (0-100)" << std::endl;
         exit(1);
       }
     } else if (std::string(argv[i]) == "--output-type") {
@@ -4460,7 +4483,8 @@ int main(int argc, char const* argv[]) {
     zmq_out_topic,
     enableMotionRecording,
     initial_compliance,
-    initial_max_close_ratio
+    initial_max_close_ratio,
+    alertVolume
   );
   std::cout << "[DEBUG] G1Deploy object created successfully!" << std::endl;
   
