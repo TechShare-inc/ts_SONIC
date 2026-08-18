@@ -209,6 +209,7 @@ show_usage() {
     echo "  --planner PATH          Set the planner model path (default: planner/example.onnx)"
     echo "  --motion-data PATH      Set the motion data path (default: reference/example_motion/)"
     echo "  --input-type TYPE       Set the input type (default: zmq_manager)"
+    echo "  --alert-volume 0-100    Set SONIC TTS alert volume (default: 100)"
     echo "  --output-type TYPE      Set the output type (default: ros2)"
     echo "  --zmq-host HOST         Set the ZMQ host (default: localhost)"
     echo ""
@@ -240,6 +241,7 @@ OBS_CONFIG_DEFAULT="policy/release/observation_config.yaml"
 PLANNER_DEFAULT="planner/target_vel/V2/planner_sonic.onnx"
 MOTION_DATA_DEFAULT="reference/example/"
 INPUT_TYPE_DEFAULT="manager"
+ALERT_VOLUME_DEFAULT="100"
 OUTPUT_TYPE_DEFAULT="all"
 ZMQ_HOST_DEFAULT="localhost"
 
@@ -249,6 +251,7 @@ OBS_CONFIG="$OBS_CONFIG_DEFAULT"
 PLANNER="$PLANNER_DEFAULT"
 MOTION_DATA="$MOTION_DATA_DEFAULT"
 INPUT_TYPE="$INPUT_TYPE_DEFAULT"
+ALERT_VOLUME="$ALERT_VOLUME_DEFAULT"
 OUTPUT_TYPE="$OUTPUT_TYPE_DEFAULT"
 ZMQ_HOST="$ZMQ_HOST_DEFAULT"
 
@@ -297,6 +300,18 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             INPUT_TYPE="$2"
+            shift 2
+            ;;
+        --alert-volume)
+            if [[ -z "$2" ]]; then
+                echo -e "${RED}Error: --alert-volume requires a value argument${NC}" >&2
+                exit 1
+            fi
+            if [[ ! "$2" =~ ^[0-9]+$ ]] || (( 10#$2 > 100 )); then
+                echo -e "${RED}Error: --alert-volume must be an integer between 0 and 100${NC}" >&2
+                exit 1
+            fi
+            ALERT_VOLUME=$((10#$2))
             shift 2
             ;;
         --output-type)
@@ -513,6 +528,7 @@ echo -e "  Motion Data:        ${GREEN}$MOTION_DATA${NC}"
 echo -e "  Obs Config:         ${GREEN}$OBS_CONFIG${NC}"
 echo -e "  Planner:            ${GREEN}$PLANNER${NC}"
 echo -e "  Input Type:         ${GREEN}$INPUT_TYPE${NC}"
+echo -e "  Alert Volume:       ${GREEN}$ALERT_VOLUME${NC}"
 echo -e "  Output Type:        ${GREEN}$OUTPUT_TYPE${NC}"
 echo -e "  ZMQ Host:           ${GREEN}$ZMQ_HOST${NC}"
 if [[ -n "$EXTRA_ARGS" ]]; then
@@ -528,6 +544,7 @@ echo -e "${BLUE}    --obs-config $OBS_CONFIG \\${NC}"
 echo -e "${BLUE}    --encoder-file $CHECKPOINT_ENCODER \\${NC}"
 echo -e "${BLUE}    --planner-file $PLANNER \\${NC}"
 echo -e "${BLUE}    --input-type $INPUT_TYPE \\${NC}"
+echo -e "${BLUE}    --alert-volume $ALERT_VOLUME \\${NC}"
 echo -e "${BLUE}    --output-type $OUTPUT_TYPE \\${NC}"
 echo -e "${BLUE}    --zmq-host $ZMQ_HOST${NC}"
 if [[ -n "$EXTRA_ARGS" ]]; then
@@ -558,6 +575,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]] || [[ -z "$confirm" ]]; then
             --encoder-file "$CHECKPOINT_ENCODER" \
             --planner-file "$PLANNER" \
             --input-type "$INPUT_TYPE" \
+            --alert-volume "$ALERT_VOLUME" \
             --output-type "$OUTPUT_TYPE" \
             --zmq-host "$ZMQ_HOST" \
             $EXTRA_ARGS
@@ -567,6 +585,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]] || [[ -z "$confirm" ]]; then
             --encoder-file "$CHECKPOINT_ENCODER" \
             --planner-file "$PLANNER" \
             --input-type "$INPUT_TYPE" \
+            --alert-volume "$ALERT_VOLUME" \
             --output-type "$OUTPUT_TYPE" \
             --zmq-host "$ZMQ_HOST"
     fi

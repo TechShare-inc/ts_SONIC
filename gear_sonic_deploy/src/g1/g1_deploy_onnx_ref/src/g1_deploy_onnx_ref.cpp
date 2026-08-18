@@ -39,7 +39,7 @@
  *   --obs-config          | Observation config YAML
  *   --encoder-model       | Encoder ONNX model (for token_state)
  *   --planner-model       | Locomotion planner ONNX model
- *   --input-type          | keyboard / gamepad / zmq / ros2 / interface_manager / gamepad_manager / zmq_manager
+ *   --input-type          | keyboard / gamepad / zmq / ros2 / interface_manager / gamepad_manager / minimal_gamepad_manager / zmq_manager
  *   --output-type         | zmq / ros2 / all
  *   --disable-crc-check   | Skip CRC validation (for MuJoCo sim)
  *   --planner-fp16        | Use FP16 for planner TensorRT engine
@@ -108,6 +108,7 @@
 #include "../include/input_interface/zmq_endpoint_interface.hpp"
 #include "../include/input_interface/interface_manager.hpp"
 #include "../include/input_interface/gamepad_manager.hpp"
+#include "../include/input_interface/minimal_gamepad_manager.hpp"
 #include "../include/input_interface/zmq_manager.hpp"
 
 // Output interface and output handlers
@@ -2159,7 +2160,8 @@ class G1Deploy {
       std::string zmq_out_topic = "g1_debug",
       bool enable_motion_recording = false,
       std::array<double, 3> initial_compliance = {0.05, 0.05, 0.0},
-      double initial_max_close_ratio = 1.0)
+      double initial_max_close_ratio = 1.0,
+      int alert_volume = 100)
       : time_(0.0),
         publish_dt_(0.002),
         control_dt_(0.02),
@@ -2187,7 +2189,7 @@ class G1Deploy {
       // Initialize Dex3 hands (ChannelFactory already initialized above)
       dex3_hands_.initialize("");
 
-      audio_thread_ = std::make_unique<AudioThread>();
+      audio_thread_ = std::make_unique<AudioThread>(static_cast<uint8_t>(alert_volume));
 
       if(!target_motion_file_path.empty())
       {
@@ -2456,6 +2458,15 @@ class G1Deploy {
       else if (input_type == "gamepad_manager") {
         input_interface_ = std::make_unique<GamepadManager>(zmq_host, zmq_port, zmq_topic, zmq_conflate, zmq_verbose);
         std::cout << "Initialized demo gamepad manager input interface" << std::endl;
+        std::cout << "  Host: " << zmq_host << ":" << zmq_port << std::endl;
+        std::cout << "  Topic: " << zmq_topic << std::endl;
+        std::cout << "  Conflate: " << (zmq_conflate ? "enabled" : "disabled") << std::endl;
+        std::cout << "  Verbose: " << (zmq_verbose ? "enabled" : "disabled") << std::endl;
+        std::cout << "  Initial encoder mode: " << initial_encoder_mode_ << std::endl;
+      }
+      else if (input_type == "minimal_gamepad_manager") {
+        input_interface_ = std::make_unique<MinimalGamepadManager>(zmq_host, zmq_port, zmq_topic, zmq_conflate, zmq_verbose);
+        std::cout << "Initialized minimal gamepad manager input interface" << std::endl;
         std::cout << "  Host: " << zmq_host << ":" << zmq_port << std::endl;
         std::cout << "  Topic: " << zmq_topic << std::endl;
         std::cout << "  Conflate: " << (zmq_conflate ? "enabled" : "disabled") << std::endl;
@@ -3449,6 +3460,14 @@ class G1Deploy {
           gamepad_mgr->UpdateGamepadRemoteData(zeros, 40);
         }
       }
+      else if (auto minimal_gamepad_mgr = dynamic_cast<MinimalGamepadManager*>(input_interface_.get())) {
+        if (low_state_data) {
+          minimal_gamepad_mgr->UpdateGamepadRemoteData(&low_state_data->wireless_remote()[0], 40);
+        } else {
+          uint8_t zeros[40] = {0};
+          minimal_gamepad_mgr->UpdateGamepadRemoteData(zeros, 40);
+        }
+      }
     
      
       bool has_planner = static_cast<bool>(planner_);
@@ -4103,11 +4122,12 @@ int main(int argc, char const* argv[]) {
     std::cout << "  motion_data_path: path to motion data directory (e.g., reference/bones_072925_test/)" << std::endl;
     std::cout << "\nOptions:" << std::endl;
     std::cout << "  --planner-file <path>: specify planner file (optional)" << std::endl;
-    std::cout << "  --input-type <keyboard|gamepad|gamepad_manager|manager|zmq|zmq_manager";
+    std::cout << "  --input-type <keyboard|gamepad|gamepad_manager|minimal_gamepad_manager|manager|zmq|zmq_manager";
 #if HAS_ROS2
     std::cout << "|ros2";
 #endif
     std::cout << ">: input interface type (default: keyboard)" << std::endl;
+    std::cout << "  --alert-volume <0-100>: set SONIC TTS alert volume (default: 100)" << std::endl;
     std::cout << "  --output-type <zmq|all";
 #if HAS_ROS2
     std::cout << "|ros2";
@@ -4142,6 +4162,7 @@ int main(int argc, char const* argv[]) {
     std::cout << "  " << argv[0] << " enp5s0 policy/token/model.onnx reference/bones_072925_test/ --obs-config policy/token/observation_config.yaml --encoder-file policy/token/encoder.onnx" << std::endl;
     std::cout << "  " << argv[0] << " enp5s0 policy/single_frame/model.onnx reference/bones_072925_test/ --input-type gamepad --planner-file policy/planner.onnx" << std::endl;
     std::cout << "  " << argv[0] << " enp5s0 policy/single_frame/model.onnx reference/bones_072925_test/ --input-type gamepad_manager --planner-file policy/planner.onnx --zmq-host localhost --zmq-port 5556" << std::endl;
+    std::cout << "  " << argv[0] << " enp5s0 policy/single_frame/model.onnx reference/bones_072925_test/ --input-type minimal_gamepad_manager --planner-file policy/planner.onnx --zmq-host localhost --zmq-port 5556" << std::endl;
     std::cout << "  " << argv[0] << " enp5s0 policy/single_frame/model.onnx reference/bones_072925_test/ --input-type zmq --zmq-host 192.168.1.2 --zmq-port 5556 --zmq-topic pose --zmq-conflate" << std::endl;
     std::cout << "  " << argv[0] << " enp5s0 policy/single_frame/model.onnx reference/bones_072925_test/ --input-type zmq_manager --planner-file policy/planner.onnx --zmq-host localhost --zmq-port 5556" << std::endl;
 #if HAS_ROS2
@@ -4165,6 +4186,7 @@ int main(int argc, char const* argv[]) {
   std::string recordInputFile = "";
   std::string playbackInputFile = "";
   std::string inputType = "keyboard"; // Default to keyboard
+  int alertVolume = 100;
   std::string outputType = "zmq"; // Default to zmq
   bool plannerFp16 = false;
   bool policyFp16 = false;
@@ -4233,12 +4255,12 @@ int main(int argc, char const* argv[]) {
       if (i + 1 < argc) {
         inputType = argv[i + 1];
         // Validate input type based on what's available
-        bool valid_input = (inputType == "keyboard" || inputType == "gamepad" || inputType == "gamepad_manager" || inputType == "zmq" || inputType == "zmq_manager" || inputType == "manager");
+        bool valid_input = (inputType == "keyboard" || inputType == "gamepad" || inputType == "gamepad_manager" || inputType == "minimal_gamepad_manager" || inputType == "zmq" || inputType == "zmq_manager" || inputType == "manager");
 #if HAS_ROS2
         valid_input = valid_input || (inputType == "ros2");
 #endif
         if (!valid_input) {
-          std::cerr << "Error: --input-type must be 'keyboard', 'gamepad', 'gamepad_manager', 'manager', 'zmq', or 'zmq_manager'";
+          std::cerr << "Error: --input-type must be 'keyboard', 'gamepad', 'gamepad_manager', 'minimal_gamepad_manager', 'manager', 'zmq', or 'zmq_manager'";
 #if HAS_ROS2
           std::cerr << ", or 'ros2'";
 #endif
@@ -4248,11 +4270,31 @@ int main(int argc, char const* argv[]) {
         std::cout << "[INFO] Using input type: " << inputType << std::endl;
         i++; // Skip the next argument since it's the input type
       } else {
-        std::cerr << "Error: --input-type requires a type argument (keyboard, gamepad, gamepad_manager, manager, zmq, zmq_manager";
+        std::cerr << "Error: --input-type requires a type argument (keyboard, gamepad, gamepad_manager, minimal_gamepad_manager, manager, zmq, zmq_manager";
 #if HAS_ROS2
         std::cerr << ", or ros2";
 #endif
         std::cerr << ")" << std::endl;
+        exit(1);
+      }
+    } else if (std::string(argv[i]) == "--alert-volume") {
+      if (i + 1 < argc) {
+        try {
+          const std::string value = argv[i + 1];
+          size_t parsed = 0;
+          alertVolume = std::stoi(value, &parsed);
+          if (parsed != value.size() || alertVolume < 0 || alertVolume > 100) {
+            std::cerr << "Error: --alert-volume must be between 0 and 100" << std::endl;
+            exit(1);
+          }
+        } catch (...) {
+          std::cerr << "Error: --alert-volume must be an integer between 0 and 100" << std::endl;
+          exit(1);
+        }
+        std::cout << "[INFO] Using alert volume: " << alertVolume << std::endl;
+        i++;
+      } else {
+        std::cerr << "Error: --alert-volume requires a value argument (0-100)" << std::endl;
         exit(1);
       }
     } else if (std::string(argv[i]) == "--output-type") {
@@ -4441,7 +4483,8 @@ int main(int argc, char const* argv[]) {
     zmq_out_topic,
     enableMotionRecording,
     initial_compliance,
-    initial_max_close_ratio
+    initial_max_close_ratio,
+    alertVolume
   );
   std::cout << "[DEBUG] G1Deploy object created successfully!" << std::endl;
   
@@ -4468,4 +4511,3 @@ int main(int argc, char const* argv[]) {
   std::cout << "[DEBUG] Program exiting normally..." << std::endl;
   return 0;
 }
-

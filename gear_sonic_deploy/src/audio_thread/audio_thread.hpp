@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <stop_token>
@@ -17,7 +18,7 @@ struct AudioCommand {
 
 class AudioThread {
  public:
-  AudioThread();
+  explicit AudioThread(uint8_t volume = 100);
 
   void SetCommand(const AudioCommand& command);
 
