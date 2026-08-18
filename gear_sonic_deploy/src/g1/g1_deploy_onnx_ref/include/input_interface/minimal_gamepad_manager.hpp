@@ -17,7 +17,7 @@
  *   B       | Select GAMEPAD control and disable ZMQ streaming
  *   A       | Select ZMQ control and enable ZMQ streaming
  *
- *   L stick | Movement direction (binned to nearest 30° increment)
+ *   L stick | Movement direction (binned to nearest 45° increment, 8 directions)
  *   R stick | Facing direction (continuous)
  */
 

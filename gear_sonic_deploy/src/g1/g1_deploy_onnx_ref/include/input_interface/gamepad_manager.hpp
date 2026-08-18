@@ -38,7 +38,7 @@
  *   L2      | LEFT_HOOK
  *   R2      | RIGHT_HOOK
  *
- *   L stick | Movement direction (binned to nearest 30° increment)
+ *   L stick | Movement direction (binned to nearest 45° increment, 8 directions)
  *   R stick | Facing direction (continuous)
  */
 
